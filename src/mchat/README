@@ -1,0 +1,16 @@
+Como usar o multicast CHAT ?
+
+Correr simplesmente ...
+
+java -Djava.net.preferIPv4Stack=true MChatCliente nickname mcast-addr porto
+
+nickname: o nickname do utilizador
+mcast-addr: o endereco multicast do chat em grupo, ex: 224.10.10.10 ou
+            qq endereco no range multicast (224.0.0.1 a 239.255.255.255)
+            isto, claro, sendo IPV4
+porto:      porto a usar, ex: 9000
+
+
+nota) -Djava.net.preferIPv4Stack=true
+       para prevenir que esta mesmo a usar o stack IPV4 quando o
+       o default seja IPV6 ...

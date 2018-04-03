@@ -1,0 +1,5 @@
+# If use multicast in a dual stack IPV4 and IPV6, use IPV4 multicast
+# by executing the proxy hjUDPproxy in the following way:
+java -Djava.net.preferIPv4Stack=true hjUDPproxy
+
+# by default the computer will try to use multicast in IPV6
