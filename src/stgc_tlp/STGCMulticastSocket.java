@@ -25,6 +25,8 @@ import java.security.NoSuchProviderException;
 import java.security.SecureRandom;
 import java.security.UnrecoverableEntryException;
 import java.security.cert.CertificateException;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
@@ -46,6 +48,7 @@ import javax.crypto.spec.SecretKeySpec;
 
 import stgc_tlp.Ciphersuite;
 import stgc_tlp.data_structures.LimitedSizeQueue;
+import stgc_tlp.exceptions.DenialOfServiceException;
 import stgc_tlp.exceptions.DataIntegrityAuthenticityException;
 import stgc_tlp.exceptions.DataReplyingException;
 
@@ -85,7 +88,7 @@ public final class STGCMulticastSocket extends MulticastSocket {
 	public STGCMulticastSocket() throws IOException {
 		super();
 		this.nounces = new LimitedSizeQueue<Integer>(MAX_NOUNCES);
-		
+
 	}
 
 	@Override
@@ -107,7 +110,7 @@ public final class STGCMulticastSocket extends MulticastSocket {
 	public synchronized void receive(DatagramPacket datagramPacket) throws IOException {
 		super.receive(datagramPacket);
 		//System.out.println(new String(datagramPacket.getData(), 0, datagramPacket.getLength()));
-		
+
 		try {
 			decryptProtectedMessage(datagramPacket);
 		} catch (InvalidKeyException | KeyStoreException | NoSuchAlgorithmException | CertificateException
@@ -115,55 +118,7 @@ public final class STGCMulticastSocket extends MulticastSocket {
 				| IllegalBlockSizeException | BadPaddingException e) {
 			e.printStackTrace();
 		}
-		
-	}
 
-	private void decryptProtectedMessage(DatagramPacket datagramPacket) 
-			throws KeyStoreException, NoSuchAlgorithmException, CertificateException, 
-			UnrecoverableEntryException, IOException, NoSuchPaddingException, 
-			InvalidKeyException, InvalidAlgorithmParameterException, 
-			IllegalBlockSizeException, BadPaddingException {
-		// HEADER
-		byte[] data = datagramPacket.getData();
-		ByteBuffer header = ByteBuffer.allocate(HEADER_SIZE).put(data, 0, HEADER_SIZE);
-		byte versionRelease = header.get(0);
-		//header.get(1); // separator
-		char payloadType = (char)header.get(2);
-		//header.get(3); // separator
-		short payloadSize = header.getShort(4);
-		// PAYLOAD2
-		byte[] payload = ByteBuffer.allocate(payloadSize).put(data, HEADER_SIZE, payloadSize).array();
-		SecretKey sessionKey = getSessionKey();
-		IvParameterSpec ivSpec = new IvParameterSpec(createIv(16));
-		Mac mac = Mac.getInstance(getPropertyValue("mac"));
-		SecretKey macKey = getMacKey();
-
-		// Decifra
-		Cipher cipher = Cipher.getInstance(getPropertyValue("ciphersuite"));
-		cipher.init(Cipher.DECRYPT_MODE, sessionKey, ivSpec);
-		byte[] content = cipher.doFinal(payload, 0, payloadSize);
-		final int macLength = mac.getMacLength();
-		final int personalMessageLength = content.length - macLength;
-		final int messageLength = personalMessageLength - Integer.BYTES; // - size of id
-		ByteBuffer personalMessage = ByteBuffer.allocate(personalMessageLength).put(content, 0, personalMessageLength);
-		int nounce = personalMessage.getInt(0);
-		if (nounces.contains(nounce)) {
-			throw new DataReplyingException();
-		}
-		nounces.add(nounce);
-		System.out.println(nounces.size());
-
-		byte[] message = ByteBuffer.allocate(data.length).put(personalMessage.array(), Integer.BYTES, messageLength).array();
-
-		// Verificaao Mac
-		mac.init(macKey);
-		mac.update(content, 0, personalMessageLength);
-		byte[] messageHash = ByteBuffer.allocate(macLength).put(content, personalMessageLength, macLength).array();
-		if (!MessageDigest.isEqual(mac.doFinal(), messageHash)) {
-			throw new DataIntegrityAuthenticityException("Macs do not match.");
-		}
-
-		datagramPacket.setData(message, 0, messageLength);
 	}
 
 	private byte[] buildProtectedMessage(byte[] data, PayloadType payloadType) 
@@ -224,19 +179,20 @@ public final class STGCMulticastSocket extends MulticastSocket {
 			KeyStoreException, CertificateException, UnrecoverableEntryException, 
 			InvalidKeyException, ShortBufferException, IllegalBlockSizeException, 
 			BadPaddingException, IllegalStateException, NoSuchProviderException, InvalidAlgorithmParameterException {
-		//PAYLOAD = E (KS, [ Mp || MACKM (Mp) ]) || MACKA (C)
-		//Mp = [id || nonce || M]
-		//C = [ Mp || MACKM (Mp) ] KS
-
+	
 		Ciphersuite cs = new Ciphersuite(getPropertyValue("ciphersuite"));
 		Cipher cipher = Cipher.getInstance(cs.getTransformation()); // TODO provider?
+		String macAlgorithm = getPropertyValue("mac");
 		// Cifrar Mp e MacKm (Mp) com a chave Ks
 
 		SecretKey sessionKey = getSessionKey();
 		IvParameterSpec ivSpec = new IvParameterSpec(createIv(16)); //TODO
 		Mac mac = Mac.getInstance(getPropertyValue("mac"));
-		SecretKey macKey = getMacKey();
-
+		byte[] macKeys = buildMacKeys();
+		SecretKey personalMessageMacKey = new SecretKeySpec(Arrays.copyOfRange(macKeys, 0, macKeys.length/2), macAlgorithm);
+		SecretKey contentMacKey = new SecretKeySpec(Arrays.copyOfRange(macKeys, macKeys.length/2, macKeys.length), macAlgorithm);
+		//System.out.println("Pm Mac key: " + personalMessageMacKey.getEncoded().length + " " + Utils.toHex(personalMessageMacKey.getEncoded(), personalMessageMacKey.getEncoded().length));
+		//System.out.println("C Mac key: " + contentMacKey.getEncoded().length + " " + Utils.toHex(contentMacKey.getEncoded(), contentMacKey.getEncoded().length));
 		byte[] personalMessage = getPersonalMessage(data);
 
 		// Parte da cifra
@@ -244,17 +200,100 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		byte[] content = new byte[cipher.getOutputSize(personalMessage.length + mac.getMacLength())];
 		int contentLength = cipher.update(personalMessage, 0, personalMessage.length, content, 0);
 
-		// Parte do MACKM (Mp)
-		mac.init(macKey);
+		// Parte do MacKm (Mp)
+		mac.init(personalMessageMacKey);
 		mac.update(personalMessage);
-		contentLength += cipher.doFinal(mac.doFinal(), 0, mac.getMacLength(), content, contentLength);
+		cipher.doFinal(mac.doFinal(), 0, mac.getMacLength(), content, contentLength);
 
-		// TODO macka
-		//SecretKey controlKey = null;
-		//byte[] payload = new byte[contentLength + mac.getMacLength()];
+		// Parte do MacKa (C)
+		mac.init(contentMacKey);
+		mac.update(content);
+		byte[] payload = ByteBuffer.allocate(content.length + mac.getMacLength()).put(content).array();
+		mac.doFinal(payload, content.length);
+		//System.out.println("Content: " + content.length + " " + Utils.toHex(content, content.length));
+		//System.out.println("Payload: " + payload.length + " " + Utils.toHex(payload, payload.length));
+		
+		return payload;
+	}
+	
+	private void decryptProtectedMessage(DatagramPacket datagramPacket) 
+			throws KeyStoreException, NoSuchAlgorithmException, CertificateException, 
+			UnrecoverableEntryException, IOException, NoSuchPaddingException, 
+			InvalidKeyException, InvalidAlgorithmParameterException, 
+			IllegalBlockSizeException, BadPaddingException {
+		byte[] data = datagramPacket.getData();
+		ByteBuffer header = ByteBuffer.allocate(HEADER_SIZE).put(data, 0, HEADER_SIZE);
+		byte versionRelease = header.get(0);
+		//header.get(1); // separator
+		char payloadType = (char)header.get(2);
+		//header.get(3); // separator
+		short payloadSize = header.getShort(4);
+		byte[] payload = ByteBuffer.allocate(payloadSize).put(data, HEADER_SIZE, payloadSize).array();
+		
+		SecretKey sessionKey = getSessionKey();
+		IvParameterSpec ivSpec = new IvParameterSpec(createIv(16));
 
-		return content;
-		//return payload;
+		String macAlgorithm = getPropertyValue("mac");
+		Mac mac = Mac.getInstance(macAlgorithm);
+		byte[] macKeys = buildMacKeys();
+		SecretKey personalMessageMacKey = new SecretKeySpec(Arrays.copyOfRange(macKeys, 0, macKeys.length/2), macAlgorithm);
+		SecretKey contentMacKey = new SecretKeySpec(Arrays.copyOfRange(macKeys, macKeys.length/2, macKeys.length), macAlgorithm);
+		//System.out.println("Pm Mac key: " + personalMessageMacKey.getEncoded().length + " " + Utils.toHex(personalMessageMacKey.getEncoded(), personalMessageMacKey.getEncoded().length));
+		//System.out.println("C Mac key: " + contentMacKey.getEncoded().length + " " + Utils.toHex(contentMacKey.getEncoded(), contentMacKey.getEncoded().length));
+		
+		// Verificação Mac do conteudo para evitar ataques de disponibilidade
+		mac.init(contentMacKey);
+		final int contentMacSize = mac.getMacLength();
+		final int contentSize = payloadSize - contentMacSize;
+		mac.update(payload, 0, contentSize);
+		if (!MessageDigest.isEqual(mac.doFinal(), Arrays.copyOfRange(payload, contentSize, payloadSize))) {
+			throw new DenialOfServiceException("Content MAC does not match.");
+		}
+		
+		//byte[] contentHash = ByteBuffer.allocate(contentMacSize).put(payload, contentSize, contentMacSize).array();
+		//byte[] f = mac.doFinal();	
+		//byte[] c = ByteBuffer.allocate(contentSize).put(payload, 0, contentSize).array();
+		//System.out.println("Content: " + c.length + " " + Utils.toHex(c, c.length));
+		//System.out.println("Payload: " + payloadSize + " " + Utils.toHex(payload, payloadSize));
+		//System.out.println("Content Hash: " + contentHash.length + " " + Utils.toHex(contentHash, contentHash.length));
+		//System.out.println("Hashed: " + f.length + " " + Utils.toHex(f, f.length));
+
+		// Decifra o conteúdo
+		Cipher cipher = Cipher.getInstance(getPropertyValue("ciphersuite"));
+		cipher.init(Cipher.DECRYPT_MODE, sessionKey, ivSpec);
+		byte[] content = cipher.doFinal(payload, 0, contentSize);
+		final int messageMacLength = mac.getMacLength();
+		final int personalMessageLength = content.length - messageMacLength;
+		final int messageLength = personalMessageLength - Integer.BYTES; // - size of id
+		ByteBuffer personalMessage = ByteBuffer.allocate(personalMessageLength).put(content, 0, personalMessageLength);
+		// Verificar o nounce para evitar a repetição de mensagens
+		int nounce = personalMessage.getInt(0);
+		if (nounces.contains(nounce)) {
+			throw new DataReplyingException();
+		}
+		nounces.add(nounce);
+		// Verificacao Mac
+		mac.init(personalMessageMacKey);
+		mac.update(content, 0, personalMessageLength);
+		byte[] messageHash = ByteBuffer.allocate(messageMacLength).put(content, personalMessageLength, messageMacLength).array();
+		if (!MessageDigest.isEqual(mac.doFinal(), messageHash)) {
+			throw new DataIntegrityAuthenticityException("Message Mac does not match.");
+		}
+		// Obter a mensagem inicial
+		byte[] message = ByteBuffer.allocate(data.length).put(personalMessage.array(), Integer.BYTES, messageLength).array();
+		datagramPacket.setData(message, 0, messageLength);
+	}
+
+	private byte[] buildMacKeys() throws NoSuchAlgorithmException, KeyStoreException, CertificateException, UnrecoverableEntryException, IOException {
+		byte[] macKey = null;
+		String macKeyValue = getPropertyValue("mackeyvalue");
+		if (!macKeyValue.equals(JCEKS_VALUE)) {
+			macKey = macKeyValue.getBytes();
+		} 
+		else {
+			macKey = getKeyStore("src/mykeystore.jceks", "password").getKey("mackey", "password".toCharArray()).getEncoded();
+		}
+		return MessageDigest.getInstance("SHA-256").digest(macKey);
 	}
 
 	private String getPropertyValue(String propertyKey) throws IOException {
@@ -298,21 +337,6 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		return sessionKey;
 	}
 
-	private SecretKey getMacKey() throws IOException, KeyStoreException, NoSuchAlgorithmException, CertificateException, UnrecoverableEntryException {
-		SecretKey macKey = null;
-		String macKeyValue = getPropertyValue("mackeyvalue");
-		if (!macKeyValue.equals(JCEKS_VALUE)) {
-			macKey = new SecretKeySpec(macKeyValue.getBytes(), getPropertyValue("mac"));
-		} else {
-			final String keyStoreFile = "src/mykeystore.jceks"; //TODO constante global
-			KeyStore keyStore = getKeyStore(keyStoreFile, "password"); //TODO change password
-			PasswordProtection keyPassword = new PasswordProtection("password".toCharArray());
-			KeyStore.Entry entry = keyStore.getEntry("mackey", keyPassword);
-			macKey = ((KeyStore.SecretKeyEntry) entry).getSecretKey();
-		}
-		return macKey;
-	}
-
 	private byte[] createIv(int size) {
 		/*byte[] ivBytes = new byte[size];
 		SecureRandom random = new SecureRandom();
@@ -330,22 +354,21 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		return nounce;
 	}
 
-	private byte[] getPersonalMessage(byte[] data) {
+	private byte[] getPersonalMessage(byte[] message) {
 		String id = ""; // TODO
 		int nounce = generateNounce();
 		return ByteBuffer
-				.allocate(Integer.BYTES + data.length)
+				.allocate(Integer.BYTES + message.length)
 				//.put(id.getBytes())
 				.putInt(nounce)
-				.put(data)
+				.put(message)
 				.array();
 	}
 
 	private KeyStore getKeyStore(String fileName, String password) 
 			throws KeyStoreException, NoSuchAlgorithmException, CertificateException, IOException {
-		File file = new File(fileName);
 		final KeyStore keyStore = KeyStore.getInstance("JCEKS");
-		keyStore.load(new FileInputStream(file), password.toCharArray());
+		keyStore.load(new FileInputStream(new File(fileName)), password.toCharArray());
 		return keyStore;
 	}
 
