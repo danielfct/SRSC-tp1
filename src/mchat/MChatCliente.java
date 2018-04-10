@@ -1,21 +1,45 @@
 package mchat;
 
+import java.io.FileInputStream;
+
 // MChatCliente.java
 // 
 
 import java.io.IOException;
+import java.net.DatagramPacket;
 import java.net.InetAddress;
+import java.nio.ByteBuffer;
+import java.security.InvalidAlgorithmParameterException;
+import java.security.InvalidKeyException;
+import java.security.Key;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.security.spec.InvalidKeySpecException;
 import java.awt.*;
 import java.awt.event.*;
+
+import javax.crypto.BadPaddingException;
+import javax.crypto.Cipher;
+import javax.crypto.IllegalBlockSizeException;
+import javax.crypto.Mac;
+import javax.crypto.NoSuchPaddingException;
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.PBEParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 import javax.swing.*;
+
+import stgc_tlp.STGCMulticastSocket;
+
 import java.util.*;
 
 // Interface para a sessao de chat swing-based
 // e pode ir sendo melhorada pelos alunos para acomodar as
 // diversas funcionalidades do trabalho 
 
-public class MChatCliente extends JFrame implements MulticastChatEventListener
-{
+public class MChatCliente extends JFrame implements MulticastChatEventListener {
 
 	private static final long serialVersionUID = 1L;
 
@@ -28,10 +52,10 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener
 
 	// Campo de texto onde se dara a entrada de mensagens
 	protected JTextField messageField;
-	
+
 	// Campo de texto onde se dara a entrada do ficheiro a fazer download
 	protected JTextField fileField;
-	
+
 	// Lista com utilizadores no chat
 	protected DefaultListModel users;
 
@@ -42,86 +66,79 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener
 		// Construct GUI components (iniciaizacao de sessao)
 		textArea = new JTextArea();
 		textArea.setEditable(false);
-		textArea.setLineWrap( true);
+		textArea.setLineWrap(true);
 		textArea.setBorder(BorderFactory.createLoweredBevelBorder());
 
-		JScrollPane textAreaScrollPane = new JScrollPane(textArea, 
-														 JScrollPane.VERTICAL_SCROLLBAR_ALWAYS, 
-														 JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+		JScrollPane textAreaScrollPane = new JScrollPane(textArea, JScrollPane.VERTICAL_SCROLLBAR_ALWAYS, JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
 		getContentPane().add(textAreaScrollPane, BorderLayout.CENTER);
-		
+
 		users = new DefaultListModel();
-		JList usersList = new JList( users);
-		JScrollPane usersListScrollPane = new JScrollPane(usersList, 
-														 JScrollPane.VERTICAL_SCROLLBAR_ALWAYS, 
-														 JScrollPane.HORIZONTAL_SCROLLBAR_NEVER) {
-				public Dimension getMinimumSize() {
-					Dimension d = super.getMinimumSize();
-					d.width = 100;
-					return d;
-				}
-				public Dimension getPreferredSize() {
-					Dimension d = super.getPreferredSize();
-					d.width = 100;
-					return d;
-				}
-			};
+		JList usersList = new JList(users);
+		JScrollPane usersListScrollPane = new JScrollPane(usersList, JScrollPane.VERTICAL_SCROLLBAR_ALWAYS, JScrollPane.HORIZONTAL_SCROLLBAR_NEVER) {
+			public Dimension getMinimumSize() {
+				Dimension d = super.getMinimumSize();
+				d.width = 100;
+				return d;
+			}
+			public Dimension getPreferredSize() {
+				Dimension d = super.getPreferredSize();
+				d.width = 100;
+				return d;
+			}
+		};
 		getContentPane().add(usersListScrollPane, BorderLayout.WEST);
 
-		Box box = new Box( BoxLayout.Y_AXIS);
-		box.add( Box.createVerticalGlue());
+		Box box = new Box(BoxLayout.Y_AXIS);
+		box.add(Box.createVerticalGlue());
 		JPanel messagePanel = new JPanel(new BorderLayout());
 
 		messagePanel.add(new JLabel("Menssagem:"), BorderLayout.WEST);
 
 		messageField = new JTextField();
-		messageField.addActionListener( new ActionListener() {
+		messageField.addActionListener(new ActionListener() {
 			public void actionPerformed(ActionEvent e) {
-			sendMessage();
+				sendMessage();
 			}
-			});
+		});
 		messagePanel.add(messageField, BorderLayout.CENTER);
 
 		JButton sendButton = new JButton("  ENVIAR ");
-		sendButton.addActionListener( new ActionListener() {
+		sendButton.addActionListener(new ActionListener() {
 			public void actionPerformed(ActionEvent e) {
-			sendMessage();
+				sendMessage();
 			}
-			});
+		});
 		messagePanel.add(sendButton, BorderLayout.EAST);
-		box.add( messagePanel);
+		box.add(messagePanel);
 
-		box.add( Box.createVerticalGlue());
-		
-		
+		box.add(Box.createVerticalGlue());
+
 		JPanel filePanel = new JPanel(new BorderLayout());
 
 		filePanel.add(new JLabel("Descarregar media"), BorderLayout.WEST);
 		fileField = new JTextField();
-		fileField.addActionListener( new ActionListener() {
+		fileField.addActionListener(new ActionListener() {
 			public void actionPerformed(ActionEvent e) {
-			downloadFile();
+				downloadFile();
 			}
-			});
+		});
 		filePanel.add(fileField, BorderLayout.CENTER);
 
 		JButton downloadButton = new JButton("DOWNLOAD");
-		downloadButton.addActionListener( new ActionListener() {
+		downloadButton.addActionListener(new ActionListener() {
 			public void actionPerformed(ActionEvent e) {
-			downloadFile();
+				downloadFile();
 			}
-			});
+		});
 		filePanel.add(downloadButton, BorderLayout.EAST);
-		box.add( filePanel);
-		
-		box.add( Box.createVerticalGlue());
-		
+		box.add(filePanel);
+
+		box.add(Box.createVerticalGlue());
 
 		getContentPane().add(box, BorderLayout.SOUTH);
 
-		// detect window closing and terminate multicast chat session
-		// detectar o fecho da janela no termino de uma sessao de chat    // 
-		addWindowListener( new WindowAdapter() {
+		// detectar o fecho da janela no termino de uma sessao de chat
+		addWindowListener(new WindowAdapter() {
 			// Invocado na primeira vez que a janela e tornada visivel.
 			public void windowOpened(WindowEvent e) {
 				messageField.requestFocus();
@@ -134,63 +151,57 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener
 			public void windowClosed(WindowEvent e) {
 				System.exit(0);
 			} 
-			});
+		});
 	}
-	
+
 	/**
 	 * Adiciona utilizador no interface do utilizador
 	 */
-	protected void uiAddUser( String userName) {
-		users.addElement( userName);
+	protected void uiAddUser(String userName) {
+		users.addElement(userName);
 	}
-	
+
 	/**
 	 * Remove utilizador no interface do utilizador.
 	 * @return Devolve true se utilizador foi removido.
 	 */
-	protected boolean uiRemUser( String userName) {
-		return users.removeElement( userName);
+	protected boolean uiRemUser(String userName) {
+		return users.removeElement(userName);
 	}
-	
+
 	/**
 	 * Inicializa lista de utilizadores a partir de um iterador -- pode ser usado
 	 * obtendo iterador de qualquer estrutura de dados de java
 	 */
-	protected void uiInitUsers( Iterator it) {
+	protected void uiInitUsers(Iterator it) {
 		users.clear();
-		if( it != null)
-			while( it.hasNext()) {
-				users.addElement( it.next());
+		if(it != null)
+			while(it.hasNext()) {
+				users.addElement(it.next());
 			}
 	}
-	
+
 	/**
 	 * Devolve um Enumeration com o nome dos utilizadores que aparecem no UI.
 	 */
 	protected Enumeration uiListUsers() {
 		return users.elements();
 	}
-	
+
 	// Configuracao do grupo multicast da sessao de chat na interface do cliente
-	public void join(String username, InetAddress group, int port, 
-					 int ttl) throws IOException {
-		setTitle("CHAT MulticastIP " + username + "@" + group.getHostAddress() 
-				 + ":" + port + " [TTL=" + ttl + "]");
-
-
-		
+	public void join(String username, InetAddress group, int port, int ttl) throws IOException {
+		setTitle("CHAT MulticastIP " + username + "@" + group.getHostAddress() + ":" + port + " [TTL=" + ttl + "]");
 		// Criar sessao de chat multicast
 		chat = new MulticastChat(username, group, port, ttl, this);
 	} 
 
 	protected void log(final String message) {
 		java.util.Date date = new java.util.Date();
-
 		SwingUtilities.invokeLater(new Runnable() {
 			public void run() {
-			textArea.append(message + "\n");
+				textArea.append(message + "\n");
 			} 
-			});
+		});
 	} 
 
 	/**
@@ -201,39 +212,34 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener
 	protected void sendMessage() {
 		String message = messageField.getText();
 		messageField.setText("");
-		doSendMessage( message);
+		doSendMessage(message);
 		messageField.requestFocus();
 	}
 
 	/**
 	 * Executa operacoes relativas ao envio de mensagens
 	 */
-	protected void doSendMessage( String message) {
+	protected void doSendMessage(String message) {
 		try {
 			chat.sendMessage(message);
 		} catch (Throwable ex) {
-			JOptionPane.showMessageDialog(this,
-										  "Erro ao enviar uma menssagem: " 
-										  + ex.getMessage(), "Chat Error", 
-															 JOptionPane.ERROR_MESSAGE);
+			JOptionPane.showMessageDialog(this, "Erro ao enviar uma menssagem: " + ex.getMessage(), "Chat Error", JOptionPane.ERROR_MESSAGE);
 		} 
 	}
-	
-	
+
 	/**
 	 * Imprime mensagem de erro
 	 */
-	protected void displayMsg( final String str, final boolean error) {
+	protected void displayMsg(final String str, final boolean error) {
 		final JFrame f = this;
-
 		SwingUtilities.invokeLater(new Runnable() {
 			public void run() {
-				if( error)
+				if (error)
 					JOptionPane.showMessageDialog(f, str, "Chat Error", JOptionPane.ERROR_MESSAGE);
 				else
 					JOptionPane.showMessageDialog(f, str, "Chat Information", JOptionPane.INFORMATION_MESSAGE);
 			} 
-			});
+		});
 	}
 
 	/**
@@ -244,11 +250,11 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener
 	protected void downloadFile() {
 		final String file = fileField.getText();
 		fileField.setText("");
-		new Thread( new Runnable() {
+		new Thread(new Runnable() {
 			public void run() {
-				doDownloadFile( file);
+				doDownloadFile(file);
 			}
-			}).start();
+		}).start();
 		messageField.requestFocus();
 	}
 
@@ -258,9 +264,9 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener
 	 * NOTA: Qualquer informacao ao utilizador deve ser efectuada usando 
 	 * o metodo "displayMsg".
 	 */
-	protected void doDownloadFile( String file) {
+	protected void doDownloadFile(String file) {
 		// TODO: a completar
-		System.err.println( "Pedido download do ficheiro " + file);
+		System.err.println("Pedido download do ficheiro " + file);
 	}
 
 	/**
@@ -273,38 +279,30 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener
 			} 
 		} catch (Throwable ex) {
 			JOptionPane.showMessageDialog(this, "Erro no termino do chat:  "
-										  + ex.getMessage(), "ERRO no Chat", 
-										 JOptionPane.ERROR_MESSAGE);
+					+ ex.getMessage(), "ERRO no Chat", 
+					JOptionPane.ERROR_MESSAGE);
 		} 
 	} 
 
-
-	// Invocado quando s erecebe uma mensagem  // 
-	public void chatMessageReceived(String username, InetAddress address, 
-									int port, String message) {
+	// Invocado quando s erecebe uma mensagem
+	public void chatMessageReceived(String username, InetAddress address, int port, String message) {
 		log("MSG:[" + username+"@"+address.getHostName() + "] disse: " + message);
 	} 
 
-
-	// Invocado quando um novo utilizador se juntou ao chat  // 
-	public void chatParticipantJoined(String username, InetAddress address, 
-									  int port) {
-		log("+++ NOVO PARTICIPANTE: " + username + " juntou-se ao grupo do chat a partir de " + address.getHostName()
-			+ ":" + port);
+	// Invocado quando um novo utilizador se juntou ao chat
+	public void chatParticipantJoined(String username, InetAddress address, int port) {
+		log("+++ NOVO PARTICIPANTE: " + username + " juntou-se ao grupo do chat a partir de " + address.getHostName() + ":" + port);
 	} 
 
 	// Invocado quando um utilizador sai do chat  // 
-	public void chatParticipantLeft(String username, InetAddress address, 
-									int port) {
-		log("--- ABANDONO: " + username + " ababdonou o grupo de chat, a partir de " + address.getHostName() + ":" 
-			+ port);
+	public void chatParticipantLeft(String username, InetAddress address, int port) {
+		log("--- ABANDONO: " + username + " ababdonou o grupo de chat, a partir de " + address.getHostName() + ":" + port);
 	} 
 
 	// Command-line invocation expecting three arguments
 	public static void main(String[] args) {
 		if ((args.length != 3) && (args.length != 4)) {
-			System.err.println("Utilizar: MChatCliente " 
-							   + "<nickusername> <grupo IPMulticast> <porto> { <ttl> }");
+			System.err.println("Utilizar: MChatCliente " + "<nickusername> <grupo IPMulticast> <porto> { <ttl> }");
 			System.err.println("       - TTL default = 1");
 			System.exit(1);
 		} 
@@ -318,13 +316,13 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener
 			group = InetAddress.getByName(args[1]);
 		} catch (Throwable e) {
 			System.err.println("Endereco de grupo multicast invalido: " 
-							   + e.getMessage());
+					+ e.getMessage());
 			System.exit(1);
 		} 
 
 		if (!group.isMulticastAddress()) {
 			System.err.println("Argumento Grupo '" + args[1] 
-							   + "' nao e um end. IP multicast");
+					+ "' nao e um end. IP multicast");
 			System.exit(1);
 		} 
 
@@ -347,13 +345,14 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener
 		try {
 			MChatCliente frame = new MChatCliente();
 			frame.setSize(800, 300);
-			frame.setVisible( true);
+			frame.setVisible(true);
 
 			frame.join(username, group, port, ttl);
 		} catch (Throwable e) {
-			System.err.println("Erro ao iniciar a frame: " + e.getClass().getName() 
-							   + ": " + e.getMessage());
+			System.err.println("Erro ao iniciar a frame: " + e.getClass().getName() + ": " + e.getMessage());
 			System.exit(1);
 		} 
-	} 
+	}
+	
+	
 }
