@@ -11,6 +11,7 @@ import java.net.InetAddress;
 import java.net.MulticastSocket;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 import java.security.Key;
@@ -20,6 +21,7 @@ import java.security.NoSuchProviderException;
 import java.security.SecureRandom;
 import java.security.spec.InvalidKeySpecException;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.List;
 import java.util.Properties;
 
@@ -34,12 +36,14 @@ import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.PBEParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
+import stgc_tlp.PayloadType;
 import stgc_tlp.STGCMulticastSocket;
 import stgc_tlp.data_structures.LimitedSizeQueue;
 import stgc_tlp.exceptions.DataIntegrityAuthenticityException;
 import stgc_tlp.exceptions.DataReplyingException;
 import stgc_tlp.exceptions.UserAuthenticationException;
 import stgc_tlp.exceptions.UserUnregisteredException;
+import utils.Utils;
 
 public class AuthenticationServer {
 
@@ -48,6 +52,17 @@ public class AuthenticationServer {
 	private static final String CIPHERSUITE_FILE = "res/ciphersuite.conf";
 	private static final String KEYSTORE_FILE = "res/keystore.jceks";
 	public static final int MAX_NOUNCES = 100;
+	
+	// TODO
+	public static final int VERSION = 1;
+	public static final int RELEASE = 1;
+	public static final byte SEPARATOR = 0x00;
+	public static final String JCEKS_VALUE = "*";
+	public static final int PACKET_HEADER_SIZE = 6;
+	public static final String PROVIDER = "BC";
+	public static final int MAX_ID_BYTES = 10 + 256; // 10 chars (nickname) + 256 chars (email)
+
+	private static final String AUTH_SERVER_IP = "224.10.10.10";
 
 	@SuppressWarnings("resource")
 	public static void main(String[] args) throws IOException {
@@ -67,15 +82,14 @@ public class AuthenticationServer {
 		socket.joinGroup(group);
 		byte[] buffer = new byte[65536];
 		DatagramPacket inPacket = new DatagramPacket(buffer, buffer.length);
+		System.out.println("Waiting for auth requests at " + group.getHostAddress() + ":" + port + "...");
 		for (;;) {	
 			try {
 				inPacket.setLength(65536); // resize with max size
 				socket.receive(inPacket);
+				System.out.println("> Recieved auth request at " + new Date());
 				byte[] data = inPacket.getData();
-
-
 				// Cliente > AS: Cliente ID || NonceC || IPMC || AutenticadorC
-
 				// IPMC = endereço Multicast a que o cliente se quer juntar
 				// NonceC = random number gerado pelo cliente
 				// AutenticadorC = E [ kc, ( NonceC || IPMC || SHA-512(pwd) || MACk (X) ) ]
@@ -83,43 +97,45 @@ public class AuthenticationServer {
 				// Kc = SHA-512(pwd)
 				// k = MD5 (NonceC || SHA-512(pwd))
 
-
 				// Client || Nounce || IP || E( k1, [Nounce || IP || SHA-512(pwd) || MAC k2[Nounce || IP || SHA-512(pwd)]) 
 				// k1 = SHA-512(pwd)
 				// k2 = MD5 (NonceC || SHA-512(pwd))
 
+				ByteBuffer dataBuffer = ByteBuffer.wrap(data); //TODO read only
+				// HEADER
+				byte versionRelease = dataBuffer.get();
+				dataBuffer.position(dataBuffer.position() + 1); // skip separator
+				char payloadType = (char)dataBuffer.get();	
+				if (payloadType != PayloadType.SAP.code) {
+					throw new Exception(); // TODO
+				}
+				dataBuffer.position(dataBuffer.position() + 1); // skip separator
+				short payloadSize = dataBuffer.getShort();
+				// PAYLOAD
+				int messageHeaderSize = MAX_ID_BYTES + Integer.BYTES + 32; // 10+256 bytes para clientid, 32 bytes para ip
+				int authSize = payloadSize - messageHeaderSize;
 
-				// 256 bytes para clientid, 32 bytes para ip
-				System.out.println(data.length);
-				int headerSize = 256 + Integer.BYTES + 32;
-				int authSize = data.length - headerSize;
-
-
-				ByteBuffer header = ByteBuffer.allocate(headerSize).put(data, 0, headerSize);
-				byte[] clientId = new byte[256];
-				header.get(clientId);
-				String client = new String(clientId); // client
-
+				byte[] clientId = new byte[MAX_ID_BYTES];
+				dataBuffer.get(clientId);
+				String client = Utils.subStringBetween(new String(clientId), '<', '>'); // client
 				System.out.println(client);
-				int nounceC = header.getInt(); // nounce
+				int nounceC = dataBuffer.getInt(); // nounce
 				if (nounces.contains(nounceC)) {
 					throw new DataReplyingException();
 				}
 				nounces.add(nounceC);
-				byte[] multicastIp = new byte[32];
-				header.get(multicastIp);
-				String ip = new String(multicastIp);
+				byte[] multicastIp = new byte[32];			
+				dataBuffer.get(multicastIp);
+				String ip = Utils.subStringBetween(new String(multicastIp), '<', '>');
 				System.out.println(ip); // ip
 				if (!isRegistered(ip, client)) {
-					throw new UserUnregisteredException("User is not registered for ip: " + ip);
+					throw new UserUnregisteredException("User \"" + client + "\" is not registered at ip: " + ip);
 				}
 
-
-
-				ByteBuffer authenticator = ByteBuffer.allocate(headerSize).put(data, headerSize, authSize);
+				ByteBuffer authenticator = ByteBuffer.allocate(authSize).put(data, messageHeaderSize, authSize);
 				String pbeAlgorithm = getPBEAlgorithm();
 				Cipher cipher = Cipher.getInstance(pbeAlgorithm,"BC");
-				String hashedPassword = getPropertyValue("res/users.conf", client);
+				String hashedPassword = getPropertyValue("users.conf", client);
 				char[] passwordSeed = hashedPassword.toCharArray(); // k1
 				Key key = SecretKeyFactory.getInstance(pbeAlgorithm).generateSecret(new PBEKeySpec(passwordSeed));
 				byte[] salt = new byte[] { 0x7d, 0x60, 0x43, 0x5f, 0x02, (byte)0xe9, (byte)0xe0, (byte)0xae }; // TODO
@@ -142,11 +158,11 @@ public class AuthenticationServer {
 						.allocate(Integer.BYTES + multicastIp.length + passwordSeed.length)
 						.putInt(nounceC)
 						.put(multicastIp)
-						.put(hashedPassword.getBytes());
+						.put(hashedPassword.getBytes(StandardCharsets.UTF_8));
 				String macAlgorithm = getMacAlgorithm();
 				Mac mac = Mac.getInstance(macAlgorithm);
 				// k2
-				byte[] macKeySeed = MessageDigest.getInstance("MD5").digest(ByteBuffer.allocate(Integer.BYTES + passwordSeed.length).putInt(nounceC).put(hashedPassword.getBytes()).array());
+				byte[] macKeySeed = MessageDigest.getInstance("MD5").digest(ByteBuffer.allocate(Integer.BYTES + passwordSeed.length).putInt(nounceC).put(hashedPassword.getBytes(StandardCharsets.UTF_8)).array());
 				SecretKey macKey = new SecretKeySpec(macKeySeed, macAlgorithm);
 				mac.init(macKey);
 				byte[] macValue = new byte[mac.getMacLength()];
@@ -190,7 +206,7 @@ public class AuthenticationServer {
 				byte[] md5Content = ByteBuffer
 						.allocate(Integer.BYTES + hashedPassword.length())
 						.putInt(nouncePlus1)
-						.put(hashedPassword.getBytes())
+						.put(hashedPassword.getBytes(StandardCharsets.UTF_8))
 						.array();
 				macKey = new SecretKeySpec(MessageDigest.getInstance("MD5").digest(md5Content), "HmacSHA256");
 				mac.init(macKey);
@@ -215,7 +231,7 @@ public class AuthenticationServer {
 				passwordSeed = new String(
 						ByteBuffer
 						.allocate(hashedPassword.length() + Integer.BYTES)
-						.put(hashedPassword.getBytes())
+						.put(hashedPassword.getBytes(StandardCharsets.UTF_8))
 						.putInt(nouncePlus1)
 						.array()).toCharArray();
 				key = SecretKeyFactory.getInstance(pbeAlgorithm).generateSecret(new PBEKeySpec(passwordSeed));
@@ -225,7 +241,7 @@ public class AuthenticationServer {
 				socket.send(new DatagramPacket(reply, 0, reply.length, inPacket.getAddress(), inPacket.getPort()));	
 
 			} catch (Exception e) {
-				// TODO
+				e.printStackTrace();
 			}
 		}
 	}
@@ -243,7 +259,8 @@ public class AuthenticationServer {
 		//		maria/maria@hotmail.com: H(password-da-maria)
 		//		jose/jose@gmai.com: H(password-do-jose)
 		//		jfaustino:/j.faustino@campus.fct.unl.pt: H(password-do-jfaustino)
-		return getPropertyValue("/res/users.conf", user) != null;
+		//TODO dividir file por salas
+		return getPropertyValue("users.conf", user) != null;
 	}
 
 	private static boolean isAuthorized(String multicastIP, String user) throws IOException {
@@ -266,12 +283,12 @@ public class AuthenticationServer {
 	//	PBE=PBEWithSHAAnd3KeyTripleDES:HMacSHA1
 
 	private static String getPBEAlgorithm() throws IOException {
-		String pbeAndMac = getPropertyValue("res/stgcsap.auth", "stgc-sap");
+		String pbeAndMac = getPropertyValue("res/stgcsap.auth", "STGC-SAP");
 		return pbeAndMac.split(":")[0];
 	}
 
 	private static String getMacAlgorithm() throws IOException {
-		String pbeAndMac = getPropertyValue("res/stgcsap.auth", "stgc-sap");
+		String pbeAndMac = getPropertyValue("res/stgcsap.auth", "STGC-SAP");
 		return pbeAndMac.split(":")[1];
 	}
 
