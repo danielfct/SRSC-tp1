@@ -1,8 +1,8 @@
-package stgc_tlp;
+package stgc;
 
 public enum PayloadType {
 
-	MESSAGE('M'), SAP('S');
+	MESSAGE('M'), SAP_AUTH_REQUEST('A'), SAP_AUTH_REPLY('R');
 
 	public final char code;
 

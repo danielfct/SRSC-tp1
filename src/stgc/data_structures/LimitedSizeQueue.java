@@ -1,4 +1,4 @@
-package stgc_tlp.data_structures;
+package stgc.data_structures;
 
 import java.util.ArrayList;
 

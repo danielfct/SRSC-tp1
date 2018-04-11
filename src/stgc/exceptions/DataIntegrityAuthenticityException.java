@@ -1,4 +1,4 @@
-package stgc_tlp.exceptions;
+package stgc.exceptions;
 
 import java.io.IOException;
 
