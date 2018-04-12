@@ -42,6 +42,7 @@ import javax.crypto.spec.SecretKeySpec;
 import stgc.data_structures.LimitedSizeQueue;
 import stgc.exceptions.DataIntegrityAuthenticityException;
 import stgc.exceptions.DataReplyingException;
+import stgc.exceptions.InvalidAddressException;
 import stgc.exceptions.UserAuthenticationException;
 import stgc.exceptions.UserUnregisteredException;
 import utils.Utils;
@@ -98,7 +99,9 @@ public class AuthenticationServer {
 				AuthorizationRequest req = (AuthorizationRequest)in.readObject();
 				System.out.println(req);
 				// TODO verificar autenticidade do utilizador
-				
+				if (req.getIp().equals(group.getHostAddress())) {
+					throw new InvalidAddressException("Ip \"" + req.getIp() + "\" is reserved to Authentication Server.");
+				}
 				if (!isRegistered(req.getIp(), req.getId())) {
 					throw new UserUnregisteredException("User \"" + req.getId() + "\" is not registered at ip: " + req.getIp());
 				}

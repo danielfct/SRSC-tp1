@@ -270,11 +270,9 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		ByteBuffer dataWriter = (ByteBuffer)ByteBuffer.wrap(datagramPacket.getData()).position(datagramPacket.getOffset());
 		ByteBuffer dataReader = dataWriter.duplicate().asReadOnlyBuffer();
 		Header header = getPacketHeader(dataReader);
-		if (header.getPayloadType() == PayloadType.MESSAGE.code) {
-			byte[] message = decryptMessage(header, dataReader);
-			dataWriter.put(message);
-			datagramPacket.setData(dataWriter.array());
-		}
+		byte[] message = decryptMessage(header, dataReader);
+		dataWriter.put(message);
+		datagramPacket.setData(dataWriter.array());
 	}
 
 	private byte[] decryptMessage(Header header, ByteBuffer data) throws Exception {
@@ -329,15 +327,13 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		ByteBuffer dataWriter = (ByteBuffer)ByteBuffer.wrap(datagramPacket.getData()).position(datagramPacket.getOffset());
 		ByteBuffer dataReader = dataWriter.duplicate().asReadOnlyBuffer();
 		Header header = getPacketHeader(dataReader);
-		if (header.getPayloadType() == PayloadType.SAP_AUTH_REQUEST.code) {
-			AuthorizationRequest auth = decryptAuthRequest(header, dataReader);
-			ByteArrayOutputStream bos = new ByteArrayOutputStream();
-			ObjectOutput o = new ObjectOutputStream(bos);   
-			o.writeObject(auth);
-			o.flush();
-			dataWriter.put(bos.toByteArray());
-			datagramPacket.setData(dataWriter.array());
-		}
+		AuthorizationRequest auth = decryptAuthRequest(header, dataReader);
+		ByteArrayOutputStream bos = new ByteArrayOutputStream();
+		ObjectOutput o = new ObjectOutputStream(bos);   
+		o.writeObject(auth);
+		o.flush();
+		dataWriter.put(bos.toByteArray());
+		datagramPacket.setData(dataWriter.array());
 	}
 
 	private AuthorizationRequest decryptAuthRequest(Header header, ByteBuffer data) throws Exception {
@@ -411,16 +407,14 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		ByteBuffer dataWriter = (ByteBuffer)ByteBuffer.wrap(datagramPacket.getData()).position(datagramPacket.getOffset());
 		ByteBuffer dataReader = dataWriter.duplicate().asReadOnlyBuffer();
 		Header header = getPacketHeader(dataReader);
-		if (header.getPayloadType() == PayloadType.SAP_AUTH_REPLY.code) {
-			TicketAS ticket = decryptAuthReply(header, dataReader, password, nounce);
-			ByteArrayOutputStream bos = new ByteArrayOutputStream();
-			ObjectOutput o = new ObjectOutputStream(bos);   
-			o.writeObject(ticket);
-			o.flush();
-			dataWriter.put(bos.toByteArray());
-			datagramPacket.setData(dataWriter.array());
-			//TODO juntar recieves todos
-		}
+		TicketAS ticket = decryptAuthReply(header, dataReader, password, nounce);
+		ByteArrayOutputStream bos = new ByteArrayOutputStream();
+		ObjectOutput o = new ObjectOutputStream(bos);   
+		o.writeObject(ticket);
+		o.flush();
+		dataWriter.put(bos.toByteArray());
+		datagramPacket.setData(dataWriter.array());
+		//TODO juntar recieves todos
 	}
 
 	private TicketAS decryptAuthReply(Header header, ByteBuffer payload, String digestedPassword, int nounce) throws Exception {
