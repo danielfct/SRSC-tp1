@@ -111,17 +111,16 @@ public final class STGCMulticastSocket extends MulticastSocket {
 			throw new IOException("Unable to send packet: \n" + sw.toString());
 		}
 	}
-	
+
 	public void sendMessage(DatagramPacket packet) throws Exception {
 		byte[] payload = encryptMessage(packet.getData());
 		sendPayload(packet, payload, PayloadType.MESSAGE);
 	}
-	
+
 	private byte[] encryptMessage(byte[] data) throws Exception {
 		String cipherAlgorithm = getPropertyValue("src/ciphersuite.conf", "ciphersuite");
 		Cipher cipher = Cipher.getInstance(cipherAlgorithm, PROVIDER);
 		String macAlgorithm = getPropertyValue("src/ciphersuite.conf", "mac");
-		// Cifrar Mp e MacKm (Mp) com a chave Ks
 		SecretKey sessionKey = getSessionKey();
 		IvParameterSpec ivSpec = new IvParameterSpec(createIv(16)); //TODO iv
 		Mac mac = Mac.getInstance(macAlgorithm, PROVIDER);
@@ -135,7 +134,6 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		mac.init(personalMessageMacKey);
 		mac.update(personalMessage);
 		cipher.doFinal(mac.doFinal(), 0, mac.getMacLength(), content, contentLength);
-		// Colocar um MacKa(C) no final do payload
 		mac.init(contentMacKey);
 		mac.update(content);
 		byte[] payload = ByteBuffer.allocate(content.length + mac.getMacLength()).put(content).array();
@@ -143,38 +141,45 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		return payload;
 	}
 
-	public AuthorizationRequest sendAuthRequest(DatagramPacket packet, String id, String sha512Password, String ip) throws Exception {
-		AuthorizationRequest request = encryptAuthRequest(id, sha512Password, ip);
-		sendPayload(packet, request.getPayload(), PayloadType.SAP_AUTH_REQUEST);
-		return request;
+	private void sendAuthRequest(DatagramPacket packet) throws Exception {
+		ByteBuffer data = ByteBuffer.wrap(packet.getData());
+		byte[] id = new byte[data.getInt()];
+		data.get(id);
+		byte[] digestPassword = new byte[data.getInt()];
+		data.get(digestPassword); //TODo objecto?
+		byte[] ip = new byte[data.getInt()];
+		data.get(ip);
+		int nounce = data.getInt();
+		byte[] payload = encryptAuthRequest(new String(id), new String(digestPassword), new String(ip), nounce);
+		sendPayload(packet, payload, PayloadType.SAP_AUTH_REQUEST);
 	}
-	
-	private AuthorizationRequest encryptAuthRequest(String id, String sha512Password, String ip) throws Exception {
+
+	private byte[] encryptAuthRequest(String id, String digestedPassword, String ip, int nounce) throws Exception {
 		byte[] idBytes = ByteBuffer.allocate(MAX_ID_BYTES).put(id.getBytes(StandardCharsets.UTF_8)).array();
-		byte[] passwordBytes = sha512Password.getBytes(StandardCharsets.UTF_8);
+		byte[] passwordBytes = digestedPassword.getBytes(StandardCharsets.UTF_8);
 		byte[] ipBytes = ByteBuffer.allocate(MAX_IP_BYTES).put(ip.getBytes(StandardCharsets.UTF_8)).array();
-		int nounce = generateNounce();
+		String macAlgorithm = getMacAlgorithm();
+		Mac mac = Mac.getInstance(macAlgorithm, PROVIDER);
+		String macKeyDigestAlgorithm = getMacKeyDigestAlgorithm();
+		MessageDigest msgDigest = MessageDigest.getInstance(macKeyDigestAlgorithm, PROVIDER);
+		byte[] macKeyContent = ByteBuffer
+				.allocate(Integer.BYTES + passwordBytes.length)
+				.putInt(nounce).put(passwordBytes)
+				.array();
+		SecretKey macKey = new SecretKeySpec(msgDigest.digest(macKeyContent), macAlgorithm);
+		mac.init(macKey);
 		byte[] macContent = ByteBuffer
 				.allocate(Integer.BYTES + ipBytes.length + passwordBytes.length)
 				.putInt(nounce).put(ipBytes).put(passwordBytes)
 				.array();
-		String macAlgorithm = getMacAlgorithm();
-		Mac mac = Mac.getInstance(macAlgorithm, PROVIDER);
-		MessageDigest md5 = MessageDigest.getInstance("MD5", PROVIDER);
-		byte[] md5Content = ByteBuffer
-				.allocate(Integer.BYTES + passwordBytes.length)
-				.putInt(nounce).put(passwordBytes)
-				.array();
-		SecretKey macKey = new SecretKeySpec(md5.digest(md5Content), macAlgorithm);
-		mac.init(macKey);
 		byte[] authenticatorContent = ByteBuffer
 				.allocate(Integer.BYTES + ipBytes.length + passwordBytes.length + mac.getMacLength())
 				.putInt(nounce).put(ipBytes).put(passwordBytes).put(mac.doFinal(macContent))
 				.array();
-		char[] passwordSeed = sha512Password.toCharArray();
+		char[] passwordSeed = digestedPassword.toCharArray();
 		String pbeAlgorithm = getPBEAlgorithm();
 		System.out.println("PBE Algorithm: " + pbeAlgorithm);
-		System.out.println("Password (Hex): " + sha512Password);
+		System.out.println("Password (Hex): " + digestedPassword);
 		Cipher cipher = Cipher.getInstance(pbeAlgorithm, PROVIDER);
 		SecretKeyFactory keyFactory = SecretKeyFactory.getInstance(pbeAlgorithm, PROVIDER);
 		byte[] salt = new byte[] { 0x7d, 0x60, 0x43, 0x5f, 0x02, (byte)0xe9, (byte)0xe0, (byte)0xae }; 	// TODO salt e count
@@ -182,70 +187,53 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		PBEKeySpec keySpec = new PBEKeySpec(passwordSeed, salt, iterationCount);
 		Key key = keyFactory.generateSecret(keySpec);
 		cipher.init(Cipher.ENCRYPT_MODE, key); 
-		byte[] authenticator = cipher.doFinal(authenticatorContent);		
+		byte[] authenticator = cipher.doFinal(authenticatorContent);
+		System.out.println(authenticator.length);
 		System.out.println("Authenticator (Hex): " + Utils.toHex(authenticator));
 		byte[] payload = ByteBuffer
 				.allocate(MAX_ID_BYTES + Integer.BYTES + MAX_IP_BYTES + authenticator.length)
 				.put(idBytes).putInt(nounce).put(ipBytes).put(authenticator)
 				.array();
-		return new AuthorizationRequest(payload, nounce);
+		return payload;
 	}
-	
-	protected void sendAuthReply(DatagramPacket packet, int nounce, String sha512Password) throws Exception {
-		byte[] payload = encryptAuthReply(nounce, sha512Password);
+
+	protected void sendAuthReply(DatagramPacket packet) throws Exception {
+		ByteBuffer data = ByteBuffer.wrap(packet.getData());
+		int nounce = data.getInt();
+		int passwordSize = data.getInt();
+		byte[] digestedPassword = new byte[passwordSize];
+		data.get(digestedPassword);
+		byte[] payload = encryptAuthReply(nounce, new String(digestedPassword));
 		sendPayload(packet, payload, PayloadType.SAP_AUTH_REPLY);
 	}
-	
-	private byte[] encryptAuthReply(int nounce, String sha512Password) throws Exception {
-		byte[] password = sha512Password.getBytes(StandardCharsets.UTF_8);
+
+	private byte[] encryptAuthReply(int nounce, String digestedPassword) throws Exception {
 		int nouncePlus1 = nounce + 1;
 		int nounceS = generateNounce();
-		System.out.println("Server nounce: " + nounceS);
-		TicketAS ticket = new TicketAS(); // TODO
+		TicketAS ticket = new TicketAS(); //TODO
 		ByteArrayOutputStream bos = new ByteArrayOutputStream();
 		ObjectOutput o = new ObjectOutputStream(bos);   
 		o.writeObject(ticket);
 		o.flush();
 		byte[] ticketBytes = ByteBuffer.allocate(MAX_TICKET_BYTES).put(bos.toByteArray()).array();
-		// TODO definir max ticket size
-
-
-		// Colocar um MacK(X) no final da mensagem
-		// K = MD5(NonceC+1 || SHA-512(pwd))
-		// X =  ( NonceC+1 || NonceS || TicketAS )
-		byte[] md5Bytes = ByteBuffer
-				.allocate(Integer.BYTES + password.length)
-				.putInt(nouncePlus1).put(password)
-				.array();
+		byte[] digestContent = (Integer.toHexString(nouncePlus1) + digestedPassword).getBytes(StandardCharsets.UTF_8);
 		String macAlgorithm = getMacAlgorithm();
 		Mac mac = Mac.getInstance(macAlgorithm, PROVIDER);
-		MessageDigest md5 = MessageDigest.getInstance("MD5");
-		byte[] macKeySeed = md5.digest(md5Bytes);
+		String macKeyDigestAlgorithm = getMacKeyDigestAlgorithm();
+		MessageDigest msgDigest = MessageDigest.getInstance(macKeyDigestAlgorithm);
+		byte[] macKeySeed = msgDigest.digest(digestContent);
 		Key macKey = new SecretKeySpec(macKeySeed, macAlgorithm);
 		mac.init(macKey);
-		byte[] macBytes = ByteBuffer
-				.allocate(Integer.BYTES + Integer.BYTES + MAX_TICKET_BYTES)
-				.putInt(nouncePlus1)
-				.putInt(nounceS)
-				.put(ticketBytes)
-				.array();
-		mac.update(macBytes);
 		byte[] bytesToCipher = ByteBuffer
 				.allocate(Integer.BYTES + Integer.BYTES + ticketBytes.length + mac.getMacLength())
-				.putInt(nouncePlus1)
-				.putInt(nounceS)
-				.put(ticketBytes)
+				.putInt(nouncePlus1).putInt(nounceS).put(ticketBytes)
 				.array();
+		mac.update(bytesToCipher, 0, Integer.BYTES + Integer.BYTES + ticketBytes.length);
 		mac.doFinal(bytesToCipher, Integer.BYTES + Integer.BYTES + ticketBytes.length);
 
 		//TODO adicionar nounce aos nounces
 
-		// passwordSeed = SHA-512(pwd) || NonceC+1
-		String replyPassword = Utils.toHex(
-				ByteBuffer
-				.allocate(password.length + Integer.BYTES)
-				.put(password).putInt(nouncePlus1)
-				.array());
+		String replyPassword = digestedPassword + Integer.toHexString(nouncePlus1);
 		System.out.println("Reply password: " + replyPassword);
 		char[] passwordSeed = replyPassword.toCharArray();
 		byte[] salt = new byte[] { 0x7d, 0x60, 0x43, 0x5f, 0x02, (byte)0xe9, (byte)0xe0, (byte)0xae }; 	// TODO salt e count
@@ -256,10 +244,10 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		Key key = keyFactory.generateSecret(keySpec);
 		Cipher cipher = Cipher.getInstance(pbeAlgorithm, PROVIDER);
 		cipher.init(Cipher.ENCRYPT_MODE, key);
-		byte[] replyMessage = cipher.doFinal(bytesToCipher);
+		byte[] replyMessage = cipher.doFinal(bytesToCipher);		
 		return replyMessage;
 	}
-	
+
 	private void sendPayload(DatagramPacket packet, byte[] payload, PayloadType payloadType) throws Exception {
 		byte[] data = appendHeader(payload, payloadType);
 		packet.setData(data);
@@ -276,13 +264,17 @@ public final class STGCMulticastSocket extends MulticastSocket {
 			throw new IOException("Unable to recieve packet: \n" + sw.toString());
 		}
 	}
-	
+
 	public void recieveMessage(DatagramPacket datagramPacket) throws Exception {
 		super.receive(datagramPacket);
-		ByteBuffer data = ByteBuffer.wrap(datagramPacket.getData()).asReadOnlyBuffer();
-		Header header = getPacketHeader(data);
-		byte[] message = decryptMessage(header, data);
-		datagramPacket.setData(message);
+		ByteBuffer dataWriter = (ByteBuffer)ByteBuffer.wrap(datagramPacket.getData()).position(datagramPacket.getOffset());
+		ByteBuffer dataReader = dataWriter.duplicate().asReadOnlyBuffer();
+		Header header = getPacketHeader(dataReader);
+		if (header.getPayloadType() == PayloadType.MESSAGE.code) {
+			byte[] message = decryptMessage(header, dataReader);
+			dataWriter.put(message);
+			datagramPacket.setData(dataWriter.array());
+		}
 	}
 
 	private byte[] decryptMessage(Header header, ByteBuffer data) throws Exception {
@@ -330,110 +322,114 @@ public final class STGCMulticastSocket extends MulticastSocket {
 
 		return message;
 	}
-	
-	
+
+
 	protected void recieveAuthRequest(DatagramPacket datagramPacket) throws Exception {
 		super.receive(datagramPacket);
-		ByteBuffer data = ByteBuffer.wrap(datagramPacket.getData()).asReadOnlyBuffer();
-		Header header = getPacketHeader(data);
-		byte[] authRequest = decryptAuthRequest(header, data);
-		datagramPacket.setData(authRequest);
+		ByteBuffer dataWriter = (ByteBuffer)ByteBuffer.wrap(datagramPacket.getData()).position(datagramPacket.getOffset());
+		ByteBuffer dataReader = dataWriter.duplicate().asReadOnlyBuffer();
+		Header header = getPacketHeader(dataReader);
+		if (header.getPayloadType() == PayloadType.SAP_AUTH_REQUEST.code) {
+			AuthorizationRequest auth = decryptAuthRequest(header, dataReader);
+			ByteArrayOutputStream bos = new ByteArrayOutputStream();
+			ObjectOutput o = new ObjectOutputStream(bos);   
+			o.writeObject(auth);
+			o.flush();
+			dataWriter.put(bos.toByteArray());
+			datagramPacket.setData(dataWriter.array());
+		}
 	}
 
-	private byte[] decryptAuthRequest(Header header, ByteBuffer data) throws Exception {
-		int messageHeaderSize = MAX_ID_BYTES + Integer.BYTES + MAX_IP_BYTES;
-		int authSize = header.getPayloadSize() - messageHeaderSize;
-
+	private AuthorizationRequest decryptAuthRequest(Header header, ByteBuffer data) throws Exception {
+		// Obter informação não cifrada
 		byte[] clientId = new byte[MAX_ID_BYTES];
 		data.get(clientId);
 		String client = new String(clientId).trim();
-		System.out.println("Client: " + client);
-
-		int nounceC = data.getInt(); // nounce
-		System.out.println("Nounce: " + nounceC);
-
-		if (nounces.contains(nounceC)) {
+		int nounce = data.getInt();
+		if (nounces.contains(nounce)) {
 			throw new DataReplyingException();
 		}
-		nounces.add(nounceC);
+		nounces.add(nounce);
 		byte[] multicastIp = new byte[MAX_IP_BYTES];
 		data.get(multicastIp);
 		String ip = new String(multicastIp).trim();
-		System.out.println("Multicast ip: " + ip);
+		byte[] cipheredAuth = new byte[header.getPayloadSize() - (data.position() - HEADER_SIZE)];
+		data.get(cipheredAuth);
+		System.out.println("Auth (hex): " + Utils.toHex(cipheredAuth));
 
-		if (!isRegistered(ip, client)) {
-			throw new UserUnregisteredException("User \"" + client + "\" is not registered at ip: " + ip);
-		}
-		byte[] cipherAuthenticator = new byte[authSize];
-		data.get(cipherAuthenticator);
-		System.out.println("Authenticator (Hex): " + Utils.toHex(cipherAuthenticator));
-
+		// Decifrar o autenticador
 		String pbeAlgorithm = getPBEAlgorithm();
-		System.out.println("PBE algorithm: " + pbeAlgorithm);
 		Cipher cipher = Cipher.getInstance(pbeAlgorithm, PROVIDER);
 		String password = Utils.subStringBetween(getPropertyValue("users.conf", client), '(', ')');
-		System.out.println("Password (Hex): " + password);
-		char[] passwordSeed = password.toCharArray(); // k1
+		System.out.println("Client password (hex): " + password);
+		char[] passwordSeed = password.toCharArray();
 		byte[] salt = new byte[] { 0x7d, 0x60, 0x43, 0x5f, 0x02, (byte)0xe9, (byte)0xe0, (byte)0xae }; 	// TODO salt e count
 		int iterationCount = 2048; // TODO
 		SecretKeyFactory keyFactory = SecretKeyFactory.getInstance(pbeAlgorithm, PROVIDER);
 		PBEKeySpec keySpec = new PBEKeySpec(passwordSeed, salt, iterationCount);
 		Key key = keyFactory.generateSecret(keySpec);
 		cipher.init(Cipher.DECRYPT_MODE, key);
-		ByteBuffer auth = ByteBuffer.wrap(cipher.doFinal(cipherAuthenticator));
-		int nounceAuth = auth.getInt();
-		System.out.println("Nounce auth: " + nounceAuth);
+
+		// Obter informação cifrada
+		ByteBuffer decipheredAuth = ByteBuffer.wrap(cipher.doFinal(cipheredAuth));
+		int nounceAuth = decipheredAuth.getInt();
 		byte[] multicastIpAuth = new byte[MAX_IP_BYTES];
-		auth.get(multicastIpAuth);
-		System.out.println("Multicast ip auth: " + new String(multicastIpAuth).trim());
+		decipheredAuth.get(multicastIpAuth);
+		String ipAuth = new String(multicastIpAuth).trim();
 		byte[] passwordAuth = new byte[password.length()];
-		auth.get(passwordAuth);
-		System.out.println("Password auth (Hex): " + new String(passwordAuth).trim());
+		decipheredAuth.get(passwordAuth);
+		String passAuth = new String(passwordAuth);
 		String macAlgorithm = getMacAlgorithm();
-		System.out.println("Mac algorithm: " + macAlgorithm);
 		Mac mac = Mac.getInstance(macAlgorithm, PROVIDER);
 		byte[] macValue = new byte[mac.getMacLength()];
-		auth.get(macValue);
-
-		MessageDigest md5 = MessageDigest.getInstance("MD5", PROVIDER);
-		byte[] message = ByteBuffer
+		decipheredAuth.get(macValue);
+		String macKeyDigestAlgorithm = getMacKeyDigestAlgorithm();
+		MessageDigest msgDigest = MessageDigest.getInstance(macKeyDigestAlgorithm, PROVIDER);
+		byte[] macKeyContent = ByteBuffer
 				.allocate(Integer.BYTES + passwordAuth.length)
-				.putInt(nounceAuth)
-				.put(passwordAuth)
+				.putInt(nounceAuth).put(passwordAuth)
 				.array();
-		byte[] macKeySeed = md5.digest(message);
+		byte[] macKeySeed = msgDigest.digest(macKeyContent);
 		SecretKey macKey = new SecretKeySpec(macKeySeed, macAlgorithm);
 		mac.init(macKey);
 		byte[] macBytes = ByteBuffer
 				.allocate(Integer.BYTES + multicastIpAuth.length + passwordAuth.length)
-				.putInt(nounceAuth)
-				.put(multicastIpAuth)
-				.put(passwordAuth)
+				.putInt(nounceAuth).put(multicastIpAuth).put(passwordAuth)
 				.array();
 		if (!MessageDigest.isEqual(macValue, mac.doFinal(macBytes))) {
 			throw new DataIntegrityAuthenticityException("Macs do not match.");
-		}
+		}	
 
-		return ByteBuffer.allocate(data.capacity()).put(message).array();
+		// Devolver o pedido para ser processado pelo servidor de autenticação
+		Authenticator auth = new Authenticator(nounceAuth, ipAuth, passAuth);
+		AuthorizationRequest request = new AuthorizationRequest(client, nounce, ip, auth);
+		return request;
 	}
-	
-	private TicketAS recieveAuthReply(DatagramPacket datagramPacket, String sha512Password, int nounce) throws Exception {
+
+	private void recieveAuthReply(DatagramPacket datagramPacket, String password, int nounce) throws Exception {
 		super.receive(datagramPacket);
-		ByteBuffer data = ByteBuffer.wrap(datagramPacket.getData()).asReadOnlyBuffer();
-		Header header = getPacketHeader(data);
-		TicketAS ticket = decryptAuthReply(header, data, sha512Password, nounce);
-		return ticket;
+		ByteBuffer dataWriter = (ByteBuffer)ByteBuffer.wrap(datagramPacket.getData()).position(datagramPacket.getOffset());
+		ByteBuffer dataReader = dataWriter.duplicate().asReadOnlyBuffer();
+		Header header = getPacketHeader(dataReader);
+		if (header.getPayloadType() == PayloadType.SAP_AUTH_REPLY.code) {
+			TicketAS ticket = decryptAuthReply(header, dataReader, password, nounce);
+			ByteArrayOutputStream bos = new ByteArrayOutputStream();
+			ObjectOutput o = new ObjectOutputStream(bos);   
+			o.writeObject(ticket);
+			o.flush();
+			dataWriter.put(bos.toByteArray());
+			datagramPacket.setData(dataWriter.array());
+			//TODO juntar recieves todos
+		}
 	}
 
-	private TicketAS decryptAuthReply(Header header, ByteBuffer data, String sha512Password, int nounce) throws Exception {
-		byte[] passwordBytes = sha512Password.getBytes(StandardCharsets.UTF_8);
-		String decryptPassword = Utils.toHex(
-				ByteBuffer.allocate(passwordBytes.length + Integer.BYTES)
-				.put(passwordBytes).putInt(nounce + 1)
-				.array());
+	private TicketAS decryptAuthReply(Header header, ByteBuffer payload, String digestedPassword, int nounce) throws Exception {
+		String decryptPassword = digestedPassword + Integer.toHexString(nounce + 1);
+		System.out.println(decryptPassword);
+		byte[] passwordBytes = decryptPassword.getBytes(StandardCharsets.UTF_8);
 		char[] passwordSeed = decryptPassword.toCharArray();
-		System.out.println("Decrypt password: " + decryptPassword);
 		String pbeAlgorithm = getPBEAlgorithm();
+		System.out.println("Pbe algorithm: " + pbeAlgorithm);
 		SecretKeyFactory keyFactory = SecretKeyFactory.getInstance(pbeAlgorithm, PROVIDER);
 		byte[] salt = new byte[] { 0x7d, 0x60, 0x43, 0x5f, 0x02, (byte)0xe9, (byte)0xe0, (byte)0xae }; 	// TODO salt e count
 		int iterationCount = 2048; // TODO
@@ -441,9 +437,9 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		Key key = keyFactory.generateSecret(keySpec);
 		Cipher cipher = Cipher.getInstance(pbeAlgorithm, PROVIDER);
 		cipher.init(Cipher.DECRYPT_MODE, key);
-		byte[] replyCipher = new byte[header.getPayloadSize()];
-		data.get(replyCipher);
-		ByteBuffer reply = ByteBuffer.wrap(cipher.doFinal(replyCipher));
+		byte[] replyMessage = new byte[header.getPayloadSize()];
+		payload.get(replyMessage);
+		ByteBuffer reply = ByteBuffer.wrap(cipher.doFinal(replyMessage));
 		int nounceCPlus1 = reply.getInt();
 		int nounceS = reply.getInt();
 		if (nounces.contains(nounceS)) {
@@ -459,31 +455,29 @@ public final class STGCMulticastSocket extends MulticastSocket {
 				.allocate(Integer.BYTES + Integer.BYTES + MAX_TICKET_BYTES)
 				.putInt(nounceCPlus1).putInt(nounceS).put(ticketBytes)
 				.array();
-		byte[] md5Content = ByteBuffer
+		byte[] digestContent = ByteBuffer
 				.allocate(Integer.BYTES + passwordBytes.length)
 				.putInt(nounce+1).put(passwordBytes)
 				.array();
-		MessageDigest md5 = MessageDigest.getInstance("MD5", PROVIDER);
+		String macKeyDigestAlgorithm = getMacKeyDigestAlgorithm();
+		MessageDigest msgDigest = MessageDigest.getInstance(macKeyDigestAlgorithm, PROVIDER);
 		String macAlgorithm = getMacAlgorithm();
 		Mac mac = Mac.getInstance(macAlgorithm, PROVIDER);
-		Key macKey = new SecretKeySpec(md5.digest(md5Content), macAlgorithm);
+		Key macKey = new SecretKeySpec(msgDigest.digest(digestContent), macAlgorithm);
 		mac.init(macKey);
 		byte[] macValue = new byte[mac.getMacLength()];
 		reply.get(macValue);
 		if (MessageDigest.isEqual(macValue, mac.doFinal(macContent))) {
 			throw new DataIntegrityAuthenticityException("Macs do not match");
 		}
-		return ticket;
+		return ticket; //TODO authreply
 	}
 
-	private byte[] buildHeader(PayloadType payloadType, short payloadSize) {
+	private byte[] appendHeader(byte[] payload, PayloadType payloadType) {
 		return ByteBuffer
-				.allocate(HEADER_SIZE)
-				.put(buildVersionRelease())
-				.put(SEPARATOR)
-				.put((byte)payloadType.code)
-				.put(SEPARATOR)
-				.putShort(payloadSize)
+				.allocate(HEADER_SIZE + payload.length)
+				.put(buildVersionRelease()).put(SEPARATOR).put((byte)payloadType.code).put(SEPARATOR).putShort((short)payload.length)
+				.put(payload)
 				.array();
 	}
 
@@ -497,19 +491,10 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		return versionReleaseByte;
 	}
 
-	private byte[] appendHeader(byte[] payload, PayloadType payloadType) {
-		byte[] header = buildHeader(payloadType, (short)payload.length);
-		return ByteBuffer
-				.allocate(header.length + payload.length)
-				.put(header)
-				.put(payload)
-				.array();
-	}
-
 	private Header getPacketHeader(ByteBuffer data) {
 		byte versionRelease = data.get();
 		data.position(data.position()+1);
-		char payloadType = (char)data.get(); // TODO data.getChar();
+		char payloadType = (char)data.get();
 		data.position(data.position()+1);
 		short payloadSize = data.getShort();
 		Header header = new Header(versionRelease, payloadType, payloadSize);
@@ -618,13 +603,33 @@ public final class STGCMulticastSocket extends MulticastSocket {
 	}
 
 	public void requestAuthorization(String id, String password, InetAddress group) throws Exception {
-		// Send message to Authentication Server 
-		String sha512Password = Utils.toHex(MessageDigest.getInstance("SHA-512", PROVIDER).digest(password.getBytes(StandardCharsets.UTF_8)));
-		DatagramPacket requestPacket = new DatagramPacket(new byte[65536], 65536, InetAddress.getByName(AUTH_SERVER_IP), 3000);
-		AuthorizationRequest request = sendAuthRequest(requestPacket, id, sha512Password, group.getHostAddress());
-		// and recieve reply message
-		DatagramPacket p = new DatagramPacket(new byte[65536], 65536);
-		TicketAS ticket = recieveAuthReply(p, sha512Password, request.getNounce());
+		// Send Request
+		byte[] idBytes = id.getBytes(StandardCharsets.UTF_8);
+		String passwordDigestAlgorithm = getPasswordDigestAlgorithm();
+		MessageDigest passwordDigest = MessageDigest.getInstance(passwordDigestAlgorithm, PROVIDER);
+		String digestedPassword = Utils.toHex(passwordDigest.digest(password.getBytes(StandardCharsets.UTF_8)));
+		byte[] passwordBytes = digestedPassword.getBytes(StandardCharsets.UTF_8);
+		byte[] ipBytes = group.getHostAddress().getBytes(StandardCharsets.UTF_8);
+		int nounce = generateNounce();
+		byte[] request = ByteBuffer
+				.allocate(Integer.BYTES + idBytes.length + Integer.BYTES + passwordBytes.length + Integer.BYTES + ipBytes.length + Integer.BYTES)
+				.putInt(idBytes.length)
+				.put(idBytes)
+				.putInt(passwordBytes.length)
+				.put(passwordBytes)
+				.putInt(ipBytes.length)
+				.put(ipBytes)
+				.putInt(nounce)
+				.array();
+		DatagramPacket requestPacket = new DatagramPacket(request, request.length, InetAddress.getByName(AUTH_SERVER_IP), 3000);
+		sendAuthRequest(requestPacket);
+		// And recieve reply
+		DatagramPacket reply = new DatagramPacket(new byte[MAX_PACKET_SIZE], MAX_PACKET_SIZE);
+		recieveAuthReply(reply, digestedPassword, nounce);
+		ByteArrayInputStream bis = new ByteArrayInputStream(reply.getData());
+		ObjectInput in = new ObjectInputStream(bis);
+		TicketAS ticket = (TicketAS)in.readObject(); //TODO mudar para authreply
+
 		System.out.println("Recieved reply packet at " + new Date());
 		tickets.put(group.getHostAddress(), ticket);
 	}
@@ -634,9 +639,19 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		return pbeAndMac.split(":")[0];
 	}
 
-	private String getMacAlgorithm() throws IOException {
+	private String getPasswordDigestAlgorithm() throws IOException {
 		String pbeAndMac = getPropertyValue("res/stgcsap.auth", "STGC-SAP");
 		return pbeAndMac.split(":")[1];
+	}
+
+	public String getMacKeyDigestAlgorithm() throws IOException {
+		String pbeAndMac = getPropertyValue("res/stgcsap.auth", "STGC-SAP");
+		return pbeAndMac.split(":")[2];
+	}
+
+	private String getMacAlgorithm() throws IOException {
+		String pbeAndMac = getPropertyValue("res/stgcsap.auth", "STGC-SAP");
+		return pbeAndMac.split(":")[3];
 	}
 
 	private boolean isRegistered(String multicastIP, String user) throws IOException {
