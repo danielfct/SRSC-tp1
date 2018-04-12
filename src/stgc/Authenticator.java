@@ -39,10 +39,10 @@ class Authenticator implements Serializable {
 	public void setDigestPassword(String digestedPassword) {
 		this.digestedPassword = digestedPassword;
 	}
-	
+
 	@Override
 	public String toString() {
-		return nounce + " " + ip + " " + digestedPassword;
+		return "Authenticator [nounce=" + nounce + ", ip=" + ip + ", digestedPassword=" + digestedPassword + "]";
 	}
 	
 }

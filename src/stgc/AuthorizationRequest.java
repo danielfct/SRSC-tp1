@@ -52,12 +52,7 @@ class AuthorizationRequest implements Serializable {
 
 	@Override
 	public String toString() {
-		StringBuilder b = new StringBuilder();
-		b.append("Authorization request:\n")
-		.append("Id: ").append(id).append("\n")
-		.append("Nounce: ").append(nounce).append("\n")
-		.append("Ip: ").append(ip).append("\n")
-		.append("Authentication:\n").append(auth).append("\n");
-		return b.toString();
+		return "AuthorizationRequest [id=" + id + ", nounce=" + nounce + ", ip=" + ip + ", auth=" + auth + "]";
 	}
+
 }
