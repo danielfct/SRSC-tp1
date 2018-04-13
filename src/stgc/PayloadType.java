@@ -1,6 +1,6 @@
 package stgc;
 
-public enum PayloadType {
+enum PayloadType {
 
 	MESSAGE('M'), SAP_AUTH_REQUEST('A'), SAP_AUTH_REPLY('R');
 

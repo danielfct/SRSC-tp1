@@ -41,6 +41,7 @@ import stgc.exceptions.DenialOfServiceException;
 import stgc.exceptions.UnauthorizedException;
 import stgc.exceptions.UserUnregisteredException;
 import utils.Utils;
+import utils.XmlParser;
 
 public final class STGCMulticastSocket extends MulticastSocket {
 
@@ -59,6 +60,7 @@ public final class STGCMulticastSocket extends MulticastSocket {
 
 	private List<Integer> nounces;
 	private Map<String, TicketAS> tickets; // multicastIP -> ticket
+	private PBEKeySpec pbeKeySpec;
 
 	public STGCMulticastSocket(SocketAddress paramSocketAddress) throws IOException {
 		super(paramSocketAddress);
@@ -77,22 +79,29 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		this.nounces = new LimitedSizeQueue<Integer>(MAX_NOUNCES);
 		this.tickets = new HashMap<String, TicketAS>();
 	}
+	
+	STGCMulticastSocket(int paramInt, PBEKeySpec pbeKeySpec) throws IOException {
+		super(paramInt);
+		this.pbeKeySpec = pbeKeySpec;
+		this.nounces = new LimitedSizeQueue<Integer>(MAX_NOUNCES);
+		this.tickets = new HashMap<String, TicketAS>();
+	}
 
 	@Override
 	public void send(DatagramPacket datagramPacket) throws IOException {
+		throw new UnsupportedOperationException();
+	}
+
+	public void sendMessage(DatagramPacket packet, String user) throws IOException {
 		try {
-			sendMessage(datagramPacket);
+			byte[] payload = encryptMessage(packet.getData(), user, packet.getAddress().getHostAddress());
+			sendPayload(packet, payload, PayloadType.MESSAGE);
 		} catch (Exception e) {
 			throw new IOException("Unable to send packet: " + e.getMessage());
 		}
 	}
 
-	public void sendMessage(DatagramPacket packet) throws Exception {
-		byte[] payload = encryptMessage(packet.getData(), packet.getAddress().getHostAddress());
-		sendPayload(packet, payload, PayloadType.MESSAGE);
-	}
-
-	private byte[] encryptMessage(byte[] data, String ip) throws Exception {
+	private byte[] encryptMessage(byte[] data, String user, String ip) throws Exception {
 		TicketAS ticket = tickets.get(ip);
 		if (ticket == null) {
 			throw new UnauthorizedException("User is not authorized to send packets to " + ip);
@@ -111,7 +120,12 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		byte[] macKeys = sha256.digest(Utils.toHex(ticket.getMacKey().getEncoded()).getBytes(StandardCharsets.UTF_8));
 		SecretKey personalMessageMacKey = new SecretKeySpec(Arrays.copyOfRange(macKeys, 0, macKeys.length/2), macAlgorithm);
 		SecretKey contentMacKey = new SecretKeySpec(Arrays.copyOfRange(macKeys, macKeys.length/2, macKeys.length), macAlgorithm);
-		byte[] personalMessage = getPersonalMessage(data);
+		int nounce = Utils.generateNounce();
+		byte[] personalMessage = ByteBuffer
+				.allocate(MAX_ID_BYTES + Integer.BYTES + data.length)
+				.put(ByteBuffer.allocate(MAX_ID_BYTES).put(user.getBytes(StandardCharsets.UTF_8)))
+				.putInt(nounce).put(data)
+				.array();
 		cipher.init(Cipher.ENCRYPT_MODE, sessionKey, ivSpec);
 		byte[] content = new byte[cipher.getOutputSize(personalMessage.length + mac.getMacLength())];
 		int contentLength = cipher.update(personalMessage, 0, personalMessage.length, content, 0);
@@ -130,7 +144,7 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		byte[] id = new byte[data.getInt()];
 		data.get(id);
 		byte[] digestPassword = new byte[data.getInt()];
-		data.get(digestPassword); //TODo objecto?
+		data.get(digestPassword);
 		byte[] ip = new byte[data.getInt()];
 		data.get(ip);
 		int nounce = data.getInt();
@@ -162,19 +176,14 @@ public final class STGCMulticastSocket extends MulticastSocket {
 				.array();
 		char[] passwordSeed = digestedPassword.toCharArray();
 		String pbeAlgorithm = getPBEAlgorithm();
-		System.out.println("PBE Algorithm: " + pbeAlgorithm);
-		System.out.println("Password (Hex): " + digestedPassword);
 		Cipher cipher = Cipher.getInstance(pbeAlgorithm, PROVIDER);
 		SecretKeyFactory keyFactory = SecretKeyFactory.getInstance(pbeAlgorithm, PROVIDER);
-		byte[] salt = getSalt().getBytes(StandardCharsets.UTF_8);
-		System.out.println(new String(salt));
+		byte[] salt = Utils.toBytes(getSalt());
 		int iterationCount = getIterations();
 		PBEKeySpec keySpec = new PBEKeySpec(passwordSeed, salt, iterationCount);
 		Key key = keyFactory.generateSecret(keySpec);
 		cipher.init(Cipher.ENCRYPT_MODE, key); 
 		byte[] authenticator = cipher.doFinal(authenticatorContent);
-		System.out.println(authenticator.length);
-		System.out.println("Authenticator (Hex): " + Utils.toHex(authenticator));
 		byte[] payload = ByteBuffer
 				.allocate(MAX_ID_BYTES + Integer.BYTES + MAX_IP_BYTES + authenticator.length)
 				.put(idBytes).putInt(nounce).put(ipBytes).put(authenticator)
@@ -215,10 +224,11 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		mac.update(bytesToCipher, 0, Integer.BYTES + Integer.BYTES + ticketBytes.length);
 		mac.doFinal(bytesToCipher, Integer.BYTES + Integer.BYTES + ticketBytes.length);
 		String replyPassword = digestedPassword + Integer.toHexString(nouncePlusOne);
-		System.out.println("Reply password: " + replyPassword);
 		char[] passwordSeed = replyPassword.toCharArray();
-		byte[] salt = getUserSalt(authReply.getTicket().getClient()).getBytes(StandardCharsets.UTF_8);
-		int iterationCount = getUserIterations(authReply.getTicket().getClient());
+		String ip = authReply.getTicket().getIp();
+		String user = authReply.getTicket().getClient();
+		byte[] salt = Utils.toBytes(XmlParser.getUserProperty(pbeKeySpec, ip, user, "salt"));
+		int iterationCount = Integer.valueOf(XmlParser.getUserProperty(pbeKeySpec, ip, user, "iterations"));
 		String pbeAlgorithm = getPBEAlgorithm();
 		SecretKeyFactory keyFactory = SecretKeyFactory.getInstance(pbeAlgorithm, PROVIDER);
 		PBEKeySpec keySpec = new PBEKeySpec(passwordSeed, salt, iterationCount);
@@ -281,18 +291,17 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		if (!MessageDigest.isEqual(mac.doFinal(ciphered), cipheredHash)) {
 			throw new DenialOfServiceException("Content MAC does not match.");
 		}
-		// Decifrar o conteúdo
+		// Decifrar o conteudo
 		String cipherAlgorithm = getPropertyValue("res/ciphersuite.conf", "ciphersuite");
-		System.out.println(cipherAlgorithm);
 		Cipher cipher = Cipher.getInstance(cipherAlgorithm, PROVIDER);
 		cipher.init(Cipher.DECRYPT_MODE, sessionKey, ivSpec);
 		byte[] content = cipher.doFinal(ciphered);
 		ByteBuffer personalMessage = ByteBuffer.wrap(Arrays.copyOfRange(content, 0, content.length - mac.getMacLength()));
 		byte[] personalMessageHash = Arrays.copyOfRange(content, content.length - mac.getMacLength(), content.length);
-		//		byte[] clientId = new byte[MAX_ID_BYTES];
-		//		personalMessage.get(clientId);
-		//		System.out.println(new String(clientId).trim());
-		// Verificar o nounce para evitar a repetição de mensagens
+		byte[] clientId = new byte[MAX_ID_BYTES];
+		personalMessage.get(clientId);
+		System.out.println(new String(clientId).trim());
+		// Verificar o nounce para evitar a repeticao de mensagens
 		int nounce = personalMessage.getInt();
 		if (nounces.contains(nounce)) {
 			throw new DataReplyingException();
@@ -300,7 +309,7 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		nounces.add(nounce);
 		byte[] message = new byte[data.capacity()];
 		personalMessage.get(message);
-		// Verificação Mac da mensagem pessoal para mitigar ataques de integridade e autenticidade
+		// Verificacao Mac da mensagem pessoal para mitigar ataques de integridade e autenticidade
 		mac.init(personalMessageMacKey);
 		if (!MessageDigest.isEqual(personalMessageHash, mac.doFinal(personalMessage.array()))) {
 			throw new DataIntegrityAuthenticityException("Message Mac does not match.");
@@ -329,7 +338,6 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		byte[] clientId = new byte[MAX_ID_BYTES];
 		data.get(clientId);
 		String client = new String(clientId).trim();
-		System.out.println(client);
 		int nounce = data.getInt();
 		if (nounces.contains(nounce)) {
 			throw new DataReplyingException();
@@ -340,25 +348,20 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		String ip = new String(multicastIp).trim();
 		byte[] cipheredAuth = new byte[header.getPayloadSize() - (data.position() - HEADER_SIZE)];
 		data.get(cipheredAuth);
-		System.out.println("Auth (hex): " + Utils.toHex(cipheredAuth));
-
 		// Decifrar o autenticador
 		String pbeAlgorithm = getPBEAlgorithm();
 		Cipher cipher = Cipher.getInstance(pbeAlgorithm, PROVIDER);
 		if (!isRegistered(ip, client)) {
-			throw new UserUnregisteredException("User \"" + client + "\" is not registered at ip: " + ip);
+			throw new UserUnregisteredException("User \"" + client + "\" is not registered at ip " + ip);
 		}
-		String password = Utils.subStringBetween(getPropertyValue("users.conf", client), '(', ')');
-	
-		System.out.println("Client password (hex): " + password);
+		String password = XmlParser.getUserProperty(pbeKeySpec, ip, client, "passwordhash");
 		char[] passwordSeed = password.toCharArray();
-		byte[] salt = getUserSalt(client).getBytes(StandardCharsets.UTF_8);
-		int iterationCount = getUserIterations(client);
+		byte[] salt = Utils.toBytes(XmlParser.getUserProperty(pbeKeySpec, ip, client, "salt"));
+		int iterationCount = Integer.valueOf(XmlParser.getUserProperty(pbeKeySpec, ip, client, "iterations"));
 		SecretKeyFactory keyFactory = SecretKeyFactory.getInstance(pbeAlgorithm, PROVIDER);
 		PBEKeySpec keySpec = new PBEKeySpec(passwordSeed, salt, iterationCount);
 		Key key = keyFactory.generateSecret(keySpec);
 		cipher.init(Cipher.DECRYPT_MODE, key);
-
 		// Obter informação cifrada
 		ByteBuffer decipheredAuth = ByteBuffer.wrap(cipher.doFinal(cipheredAuth));
 		int nounceAuth = decipheredAuth.getInt();
@@ -388,7 +391,6 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		if (!MessageDigest.isEqual(macValue, mac.doFinal(macBytes))) {
 			throw new DataIntegrityAuthenticityException("Macs do not match.");
 		}	
-
 		// Devolver o pedido para ser processado pelo servidor de autenticação
 		Authenticator auth = new Authenticator(nounceAuth, ipAuth, passAuth);
 		AuthorizationRequest request = new AuthorizationRequest(client, nounce, ip, auth);
@@ -408,20 +410,15 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		dataWriter.put(bos.toByteArray());
 		datagramPacket.setData(dataWriter.array());
 	}
-	
+
 	private TicketAS decryptAuthReply(Header header, ByteBuffer payload, String digestedPassword, int nounce) throws Exception {
 		String decryptPassword = digestedPassword + Integer.toHexString(nounce + 1);
-		System.out.println(decryptPassword);
 		byte[] passwordBytes = decryptPassword.getBytes(StandardCharsets.UTF_8);
 		char[] passwordSeed = decryptPassword.toCharArray();
 		String pbeAlgorithm = getPBEAlgorithm();
-		System.out.println("Pbe algorithm: " + pbeAlgorithm);
 		SecretKeyFactory keyFactory = SecretKeyFactory.getInstance(pbeAlgorithm, PROVIDER);
-		byte[] salt = getSalt().getBytes(StandardCharsets.UTF_8);
+		byte[] salt = Utils.toBytes(getSalt());
 		int iterationCount = getIterations();
-		
-		System.out.println(new String(salt));
-		System.out.println(iterationCount);
 		PBEKeySpec keySpec = new PBEKeySpec(passwordSeed, salt, iterationCount);
 		Key key = keyFactory.generateSecret(keySpec);
 		Cipher cipher = Cipher.getInstance(pbeAlgorithm, PROVIDER);
@@ -434,12 +431,12 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		if (nounces.contains(nounceS)) {
 			throw new DataReplyingException();
 		}
+		nounces.add(nounceS);
 		byte[] ticketBytes = new byte[MAX_TICKET_BYTES];
 		reply.get(ticketBytes);
 		ByteArrayInputStream bis = new ByteArrayInputStream(ticketBytes);
 		ObjectInput in = new ObjectInputStream(bis);
-		TicketAS ticket = (TicketAS)in.readObject(); 
-		System.out.println(ticket.toString());
+		TicketAS ticket = (TicketAS)in.readObject();
 		byte[] macContent = ByteBuffer
 				.allocate(Integer.BYTES + Integer.BYTES + MAX_TICKET_BYTES)
 				.putInt(nounceCPlus1).putInt(nounceS).put(ticketBytes)
@@ -506,17 +503,6 @@ public final class STGCMulticastSocket extends MulticastSocket {
 				0x08, 0x09, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15
 		};
 	}
-	
-	private byte[] getPersonalMessage(byte[] message) {
-		String id = ""; // TODO
-		int nounce = Utils.generateNounce();
-		return ByteBuffer
-				.allocate(Integer.BYTES + message.length)
-				//.put(id.getBytes(StandardCharsets.UTF_8))
-				.putInt(nounce)
-				.put(message)
-				.array();
-	}
 
 	@Override
 	public void joinGroup(InetAddress multicastIp) throws IOException {
@@ -559,6 +545,7 @@ public final class STGCMulticastSocket extends MulticastSocket {
 				.putInt(ipBytes.length).put(ipBytes).putInt(nounce)
 				.array();
 		DatagramPacket requestPacket = new DatagramPacket(request, request.length, InetAddress.getByName(AUTH_SERVER_IP), 3001);
+		System.out.println("> Sending authorization request at " + new Date());
 		sendAuthRequest(requestPacket);
 		// And recieve reply
 		DatagramPacket replyPacket = new DatagramPacket(new byte[MAX_PACKET_SIZE], MAX_PACKET_SIZE);
@@ -566,15 +553,15 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		ByteArrayInputStream bis = new ByteArrayInputStream(replyPacket.getData());
 		ObjectInput in = new ObjectInputStream(bis);
 		TicketAS ticket = (TicketAS)in.readObject();
-		System.out.println("Recieved reply packet at " + new Date());
+		System.out.println("> Recieved authorization reply at " + new Date());
+		System.out.println(ticket);
 		tickets.put(group.getHostAddress(), ticket);
 	}
 
 	// Properties
 
-	private boolean isRegistered(String multicastIP, String user) throws IOException {
-		//TODO dividir file por salas
-		return getPropertyValue("users.conf", user) != null;
+	private boolean isRegistered(String multicastIp, String user) throws Exception {
+		return XmlParser.getUserProperties(pbeKeySpec, multicastIp, user) != null;
 	}
 
 	private String getPropertyValue(String file, String key) throws IOException {
@@ -582,17 +569,17 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		properties.load(new FileInputStream(file));
 		return properties.getProperty(key);
 	}
-	
+
 	private String getSalt() throws IOException {
 		String pbe = getPropertyValue("res/stgcsap.auth", "STGC-SAP");
 		return pbe.split(":")[0];
 	}
-	
+
 	private int getIterations() throws IOException {
 		String pbe = getPropertyValue("res/stgcsap.auth", "STGC-SAP");
 		return Integer.valueOf(pbe.split(":")[1]);
 	}
-	
+
 	private String getPBEAlgorithm() throws IOException {
 		String pbe = getPropertyValue("res/stgcsap.auth", "STGC-SAP");
 		return pbe.split(":")[2];
@@ -611,16 +598,6 @@ public final class STGCMulticastSocket extends MulticastSocket {
 	private String getMacAlgorithm() throws IOException {
 		String pbe = getPropertyValue("res/stgcsap.auth", "STGC-SAP");
 		return pbe.split(":")[5];
-	}
-	
-	private String getUserSalt(String user) throws IOException {
-		String property = getPropertyValue("users.conf", user);
-		return property.split(":")[0];
-	}
-	
-	private int getUserIterations(String user) throws IOException {
-		String property = getPropertyValue("users.conf", user);
-		return Integer.valueOf(property.split(":")[1]);
 	}
 
 }

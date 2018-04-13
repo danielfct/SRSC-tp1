@@ -1,6 +1,6 @@
 package stgc;
 
-public class Header {
+final class Header {
 
 	private byte versionRelease;
 	private char payloadType;

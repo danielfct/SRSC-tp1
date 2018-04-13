@@ -2,7 +2,7 @@ package stgc;
 
 import java.io.Serializable;
 
-class AuthorizationRequest implements Serializable {
+final class AuthorizationRequest implements Serializable {
 
 	private static final long serialVersionUID = -7546180382410144525L;
 

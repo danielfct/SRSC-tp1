@@ -4,7 +4,7 @@ import java.io.Serializable;
 import java.security.Key;
 
 
-class TicketAS implements Serializable {
+final class TicketAS implements Serializable {
 
 	private static final long serialVersionUID = 6146667052618121076L;
 	
