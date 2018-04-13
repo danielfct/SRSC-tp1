@@ -8,19 +8,19 @@ java AuthenticationServer 224.224.224.224 3001 b109f3bbbc244eb82441917ed06d618b9
 # MulticastReciever
 java MulticastReceiver multicastgroup port  
 Exemplo de execução do recetor:  
-224.10.10.10 3000  
+java MulticastReceiver 224.10.10.10 3000  
 
 # MulticastSender
 java MulticastSender multicastgroup port timeinterval  
 Exemplo de execução do emissor:  
-224.10.10.10 3000 1  
+java MulticastSender 224.10.10.10 3000 1  
 
 # MChatCliente
 java MChatCliente nickusername/email multicastgroup port <ttl>  
 Exemplo de execução do multicastChat:  
-jose/jose@gmai.com 224.10.10.10 9001  
+java MChatCliente jose/jose@gmai.com 224.10.10.10 9001  
 
 # FileEncryption
 java FileEncryption inputfile outputfile password  
 Exemplo de execução do fileEncryption:  
-res/users.conf res/users.axx password  
+java FileEncryption res/users.conf res/users.axx password  
