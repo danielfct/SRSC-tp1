@@ -22,12 +22,13 @@ public class MulticastSender {
 			System.err.println("Multicast address required...");
 			System.exit(0);
 		}
+		String user = "maria/maria@hotmail.com";
 		STGCMulticastSocket ms = new STGCMulticastSocket();
 		ms.setSoTimeout(10000);
-		ms.requestAuthorization("maria/maria@hotmail.com", "password", group);
+		ms.requestAuthorization(user, "password", group);
 		do {
-			msg = "<maria/maria@hotmail.com>top secret message, sent on: " + new Date();
-			byte[] data = msg.getBytes(StandardCharsets.UTF_8);
+			msg = "top secret message, sent on: " + new Date();
+			byte[] data = ("<"+user+">"+msg).getBytes(StandardCharsets.UTF_8);
 			DatagramPacket p = new DatagramPacket(data, data.length, group, port);
 			ms.send(p);
 			System.out.println("Tamanho: " + p.getLength() + "; Msg enviada: "+ msg);

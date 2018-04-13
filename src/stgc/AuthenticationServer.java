@@ -90,6 +90,7 @@ final class AuthenticationServer {
 				String macAlgorithm = getMacAlgorithm(ip);
 				Key macKey = getMacKey(ip);
 				TicketAS ticket = new TicketAS(user, ip, ciphersuite, sessionKey, macAlgorithm, macKey);
+				System.out.println(ticket);
 				AuthorizationReply authReply = new AuthorizationReply(digestedPassword, nouncePlusOne, nounceS, ticket);
 				ByteArrayOutputStream bos = new ByteArrayOutputStream();
 				ObjectOutput o = new ObjectOutputStream(bos);   

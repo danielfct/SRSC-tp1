@@ -262,7 +262,7 @@ public final class STGCMulticastSocket extends MulticastSocket {
 
 	public void recieveMessage(DatagramPacket packet) throws Exception {
 		super.receive(packet);
-		System.out.println("> Recieved message at " + new Date());
+		//System.out.println("> Recieved message at " + new Date());
 		ByteBuffer dataWriter = (ByteBuffer)ByteBuffer.wrap(packet.getData()).position(packet.getOffset());
 		ByteBuffer dataReader = dataWriter.duplicate().asReadOnlyBuffer();
 		Header header = getPacketHeader(dataReader);
@@ -488,12 +488,12 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		data.position(data.position()+1);
 		short payloadSize = data.getShort();
 		Header header = new Header(versionRelease, payloadType, payloadSize);
-		System.out.println("--- Packet header ---");
-		System.out.println ("Version: " + header.getVersion());
-		System.out.println("Release: " + header.getRelease());
-		System.out.println("Payload type: " + header.getPayloadType());
-		System.out.println("Payload size: " + header.getPayloadSize());
-		System.out.println("---------------------");
+//		System.out.println("--- Packet header ---");
+//		System.out.println ("Version: " + header.getVersion());
+//		System.out.println("Release: " + header.getRelease());
+//		System.out.println("Payload type: " + header.getPayloadType());
+//		System.out.println("Payload size: " + header.getPayloadSize());
+//		System.out.println("---------------------");
 		return header;
 	}
 
@@ -549,7 +549,7 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		dataStream.close();
 		byte[] data = byteStream.toByteArray();
 		DatagramPacket requestPacket = new DatagramPacket(data, data.length, InetAddress.getByName(AUTH_SERVER_IP), AUTH_SERVER_PORT);
-		System.out.println("> Sending authorization request at " + new Date());
+		//System.out.println("> Sending authorization request at " + new Date());
 		sendAuthRequest(requestPacket);
 		// And recieve reply
 		DatagramPacket replyPacket = new DatagramPacket(new byte[MAX_PACKET_SIZE], MAX_PACKET_SIZE);
@@ -557,8 +557,8 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		ByteArrayInputStream bis = new ByteArrayInputStream(replyPacket.getData());
 		ObjectInput in = new ObjectInputStream(bis);
 		TicketAS ticket = (TicketAS)in.readObject();
-		System.out.println("> Recieved authorization reply at " + new Date());
-		System.out.println(ticket);
+		//System.out.println("> Recieved authorization reply at " + new Date());
+		//System.out.println(ticket);
 		tickets.put(group.getHostAddress(), ticket);
 	}
 
