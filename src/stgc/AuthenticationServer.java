@@ -2,6 +2,7 @@ package stgc;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -89,12 +90,13 @@ final class AuthenticationServer {
 				String macAlgorithm = getMacAlgorithm();
 				Key macKey = getKeyFromKeystore("mackey", "password");
 				TicketAS ticket = new TicketAS(user, ip, ciphersuite, sessionKey, macAlgorithm, macKey);
+				
 				AuthorizationReply authReply = new AuthorizationReply(digestedPassword, nouncePlusOne, nounceS, ticket);
 				ByteArrayOutputStream bos = new ByteArrayOutputStream();
 				ObjectOutput o = new ObjectOutputStream(bos);   
 				o.writeObject(authReply);
 				o.flush();
-				byte[] reply = bos.toByteArray();
+				byte[] reply = bos.toByteArray();		
 				socket.sendAuthReply(new DatagramPacket(reply, reply.length, inPacket.getAddress(), inPacket.getPort()));
 				List<String> users = dacl.get(ip);
 				if (users == null) {

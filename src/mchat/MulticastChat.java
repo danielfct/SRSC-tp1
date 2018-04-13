@@ -5,6 +5,11 @@ package mchat;
 
 import java.io.*;
 import java.net.*;
+import java.nio.charset.StandardCharsets;
+
+import javax.swing.JOptionPane;
+
+import stgc.STGCMulticastSocket;
 
 public class MulticastChat extends Thread {
 
@@ -21,12 +26,12 @@ public class MulticastChat extends Thread {
 	public static final long CHAT_MAGIC_NUMBER = 4969756929653643804L;
 
 	// numero de milisegundos no teste de pooling de terminacao
-	public static final int DEFAULT_SOCKET_TIMEOUT_MILLIS = 5000;
+	public static final int DEFAULT_SOCKET_TIMEOUT_MILLIS = 10000;
 
 	// Multicast socket used to send and receive multicast protocol PDUs
 	// Socket Multicast usado para enviar e receber mensagens 
 	// no ambito das operacoes que tem lugar no Chat
-	protected MulticastSocket msocket;
+	protected STGCMulticastSocket msocket;
 
 	// Username / User-Nick-Name do Chat
 	protected String username;
@@ -40,15 +45,17 @@ public class MulticastChat extends Thread {
 	// Controlo  - thread de execucao
 	protected boolean isActive;
 
-	public MulticastChat(String username, InetAddress group, int port, int ttl, MulticastChatEventListener listener) throws IOException {
+	public MulticastChat(String username, InetAddress group, int port, int ttl, MulticastChatEventListener listener) throws Exception {
 		this.username = username;
 		this.group = group;
 		this.listener = listener;
 		isActive = true;
 		// create & configure multicast socket
-		msocket = new MulticastSocket(port);
+		msocket = new STGCMulticastSocket(port);
 		msocket.setSoTimeout(DEFAULT_SOCKET_TIMEOUT_MILLIS);
 		msocket.setTimeToLive(ttl);
+		String password = JOptionPane.showInputDialog(null, "Inserir a palavra-passe:", "Palavra-passe", JOptionPane.PLAIN_MESSAGE);
+		msocket.requestAuthorization(username, password, group);
 		msocket.joinGroup(group);
 		// start receive thread and send multicast join message
 		start();
@@ -73,12 +80,12 @@ public class MulticastChat extends Thread {
 	protected void sendJoin() throws IOException {
 		ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
 		DataOutputStream dataStream = new DataOutputStream(byteStream);
-
+		byte[] user = ("<" + username + ">").getBytes(StandardCharsets.UTF_8); //TODO
+		dataStream.write(user);
 		dataStream.writeLong(CHAT_MAGIC_NUMBER);
 		dataStream.writeInt(JOIN);
 		dataStream.writeUTF(username);
 		dataStream.close();
-
 		byte[] data = byteStream.toByteArray();
 		DatagramPacket packet = new DatagramPacket(data, data.length, group, msocket.getLocalPort());
 		msocket.send(packet);
@@ -96,6 +103,7 @@ public class MulticastChat extends Thread {
 	protected void sendLeave() throws IOException {
 		ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
 		DataOutputStream dataStream = new DataOutputStream(byteStream);
+		dataStream.writeUTF(username);
 		dataStream.writeLong(CHAT_MAGIC_NUMBER);
 		dataStream.writeInt(LEAVE);
 		dataStream.writeUTF(username);
@@ -118,6 +126,7 @@ public class MulticastChat extends Thread {
 	public void sendMessage(String message) throws IOException {
 		ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
 		DataOutputStream dataStream = new DataOutputStream(byteStream);
+		dataStream.writeUTF(username);
 		dataStream.writeLong(CHAT_MAGIC_NUMBER);
 		dataStream.writeInt(MESSAGE);
 		dataStream.writeUTF(username);

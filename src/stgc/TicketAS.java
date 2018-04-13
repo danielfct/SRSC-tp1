@@ -23,7 +23,7 @@ final class TicketAS implements Serializable {
 		this.sessionKey = sessionKey;
 		this.macAlgorithm = macAlgorithm;
 		this.macKey = macKey;
-		this.timeout = System.currentTimeMillis() + 60000L; // up to 1 hour of authorization
+		this.timeout = System.currentTimeMillis() + 3600000L; // up to 1 hour of authorization
 	}
 
 	public String getClient() {

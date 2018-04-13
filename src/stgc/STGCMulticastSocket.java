@@ -2,16 +2,17 @@ package stgc;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.ObjectInput;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutput;
 import java.io.ObjectOutputStream;
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.net.DatagramPacket;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.MulticastSocket;
 import java.net.NetworkInterface;
 import java.net.SocketAddress;
@@ -56,7 +57,8 @@ public final class STGCMulticastSocket extends MulticastSocket {
 	public static final int MAX_TICKET_BYTES = 1024;
 	public static final int MAX_PACKET_SIZE = 65507;
 
-	private static final String AUTH_SERVER_IP = "224.10.10.10";
+	private static final String AUTH_SERVER_IP = "224.224.224.224";
+	private static final int AUTH_SERVER_PORT = 3001;
 
 	private List<Integer> nounces;
 	private Map<String, TicketAS> tickets; // multicastIP -> ticket
@@ -79,7 +81,7 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		this.nounces = new LimitedSizeQueue<Integer>(MAX_NOUNCES);
 		this.tickets = new HashMap<String, TicketAS>();
 	}
-	
+
 	STGCMulticastSocket(int paramInt, PBEKeySpec pbeKeySpec) throws IOException {
 		super(paramInt);
 		this.pbeKeySpec = pbeKeySpec;
@@ -88,27 +90,31 @@ public final class STGCMulticastSocket extends MulticastSocket {
 	}
 
 	@Override
-	public void send(DatagramPacket datagramPacket) throws IOException {
-		throw new UnsupportedOperationException();
-	}
-
-	public void sendMessage(DatagramPacket packet, String user) throws IOException {
+	public void send(DatagramPacket packet) throws IOException {
 		try {
-			byte[] payload = encryptMessage(packet.getData(), user, packet.getAddress().getHostAddress());
-			sendPayload(packet, payload, PayloadType.MESSAGE);
+			String user = Utils.substringBetween(new String(packet.getData()), '<', '>');
+			byte[] msg = Arrays.copyOfRange(packet.getData(), user.length()+2, packet.getData().length);
+			sendMessage(packet, msg, user);
 		} catch (Exception e) {
-			throw new IOException("Unable to send packet: " + e.getMessage());
+			throw new IOException(e.getMessage());
 		}
 	}
 
-	private byte[] encryptMessage(byte[] data, String user, String ip) throws Exception {
+	public void sendMessage(DatagramPacket packet, byte[] msg, String user) throws Exception {
+		byte[] payload = encryptMessage(msg, user, packet.getAddress().getHostAddress());
+		byte[] ip = ByteBuffer.allocate(MAX_IP_BYTES).put(packet.getAddress().getHostAddress().getBytes(StandardCharsets.UTF_8)).array();
+		byte[] data = ByteBuffer.allocate(ip.length + payload.length).put(ip).put(payload).array();
+		sendPayload(packet, data, PayloadType.MESSAGE);
+	}
+
+	private byte[] encryptMessage(byte[] msg, String user, String ip) throws Exception {
 		TicketAS ticket = tickets.get(ip);
 		if (ticket == null) {
-			throw new UnauthorizedException("User is not authorized to send packets to " + ip);
+			throw new UnauthorizedException("Não tem autorização para enviar pacotes para o endereço " + ip);
 		}
 		if (ticket.isExpired()) {
 			tickets.remove(ip);
-			throw new UnauthorizedException("Authorization to " + ip + " has expired");
+			throw new UnauthorizedException("A autorização ao endereço " + ip + " expirou");
 		}
 		String cipherAlgorithm = getPropertyValue("res/ciphersuite.conf", "ciphersuite");
 		Cipher cipher = Cipher.getInstance(cipherAlgorithm, PROVIDER);
@@ -121,10 +127,12 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		SecretKey personalMessageMacKey = new SecretKeySpec(Arrays.copyOfRange(macKeys, 0, macKeys.length/2), macAlgorithm);
 		SecretKey contentMacKey = new SecretKeySpec(Arrays.copyOfRange(macKeys, macKeys.length/2, macKeys.length), macAlgorithm);
 		int nounce = Utils.generateNounce();
+		byte[] username = ByteBuffer.allocate(MAX_ID_BYTES).put(user.getBytes(StandardCharsets.UTF_8)).array();
 		byte[] personalMessage = ByteBuffer
-				.allocate(MAX_ID_BYTES + Integer.BYTES + data.length)
-				.put(ByteBuffer.allocate(MAX_ID_BYTES).put(user.getBytes(StandardCharsets.UTF_8)))
-				.putInt(nounce).put(data)
+				.allocate(MAX_ID_BYTES + Integer.BYTES + msg.length)
+				.put(username)
+				.putInt(nounce)
+				.put(msg)
 				.array();
 		cipher.init(Cipher.ENCRYPT_MODE, sessionKey, ivSpec);
 		byte[] content = new byte[cipher.getOutputSize(personalMessage.length + mac.getMacLength())];
@@ -140,15 +148,12 @@ public final class STGCMulticastSocket extends MulticastSocket {
 	}
 
 	private void sendAuthRequest(DatagramPacket packet) throws Exception {
-		ByteBuffer data = ByteBuffer.wrap(packet.getData());
-		byte[] id = new byte[data.getInt()];
-		data.get(id);
-		byte[] digestPassword = new byte[data.getInt()];
-		data.get(digestPassword);
-		byte[] ip = new byte[data.getInt()];
-		data.get(ip);
-		int nounce = data.getInt();
-		byte[] payload = encryptAuthRequest(new String(id), new String(digestPassword), new String(ip), nounce);
+		DataInputStream istream = new DataInputStream(new ByteArrayInputStream(packet.getData(), packet.getOffset(), packet.getLength()));
+		String username = istream.readUTF();
+		String digestedPassword = istream.readUTF();
+		String multicastIp = istream.readUTF();
+		int nounce = istream.readInt();
+		byte[] payload = encryptAuthRequest(username, digestedPassword, multicastIp, nounce);
 		sendPayload(packet, payload, PayloadType.SAP_AUTH_REQUEST);
 	}
 
@@ -251,28 +256,32 @@ public final class STGCMulticastSocket extends MulticastSocket {
 			recieveMessage(datagramPacket);
 		} catch (Exception e) {
 			e.printStackTrace();
-			throw new IOException("Unable to recieve packet: " + e.getLocalizedMessage());
+			throw new IOException(e.getLocalizedMessage());
 		}
 	}
 
-	public void recieveMessage(DatagramPacket datagramPacket) throws Exception {
-		super.receive(datagramPacket);
-		ByteBuffer dataWriter = (ByteBuffer)ByteBuffer.wrap(datagramPacket.getData()).position(datagramPacket.getOffset());
+	public void recieveMessage(DatagramPacket packet) throws Exception {
+		super.receive(packet);
+		System.out.println("> Recieved message at " + new Date());
+		ByteBuffer dataWriter = (ByteBuffer)ByteBuffer.wrap(packet.getData()).position(packet.getOffset());
 		ByteBuffer dataReader = dataWriter.duplicate().asReadOnlyBuffer();
 		Header header = getPacketHeader(dataReader);
 		byte[] message = decryptMessage(header, dataReader);
 		dataWriter.put(message);
-		datagramPacket.setData(dataWriter.array());
+		packet.setData(dataWriter.array(), packet.getOffset(), message.length);
 	}
 
 	private byte[] decryptMessage(Header header, ByteBuffer data) throws Exception {
+		byte[] ipBytes = new byte[MAX_IP_BYTES];
+		data.get(ipBytes);
+		String ip = new String(ipBytes).trim();
 		TicketAS ticket = tickets.get(ip);
 		if (ticket == null) {
-			throw new UnauthorizedException("User is not authorized to recieve packets to " + ip);
+			throw new UnauthorizedException("O utilizador não está autorizado a receber mensagens de " + ip);
 		}
 		if (ticket.isExpired()) {
 			tickets.remove(ip);
-			throw new UnauthorizedException("Authorization to " + ip + " has expired");
+			throw new UnauthorizedException("A autorização ao endereço " + ip + " expirou");
 		}
 		Key sessionKey = ticket.getSessionKey();
 		IvParameterSpec ivSpec = new IvParameterSpec(createIv(16)); //TODO
@@ -281,9 +290,7 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		byte[] macKeys = MessageDigest.getInstance("SHA-256", PROVIDER).digest(Utils.toHex(ticket.getMacKey().getEncoded()).getBytes(StandardCharsets.UTF_8));
 		SecretKey personalMessageMacKey = new SecretKeySpec(Arrays.copyOfRange(macKeys, 0, macKeys.length/2), macAlgorithm);
 		SecretKey contentMacKey = new SecretKeySpec(Arrays.copyOfRange(macKeys, macKeys.length/2, macKeys.length), macAlgorithm);
-
-		// Verificação Mac do conteudo cifrado da mensagem
-		byte[] ciphered = new byte[header.getPayloadSize() - mac.getMacLength()];
+		byte[] ciphered = new byte[header.getPayloadSize() - MAX_IP_BYTES - mac.getMacLength()];
 		data.get(ciphered);
 		byte[] cipheredHash = new byte[mac.getMacLength()];
 		data.get(cipheredHash);
@@ -291,37 +298,34 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		if (!MessageDigest.isEqual(mac.doFinal(ciphered), cipheredHash)) {
 			throw new DenialOfServiceException("Content MAC does not match.");
 		}
-		// Decifrar o conteudo
 		String cipherAlgorithm = getPropertyValue("res/ciphersuite.conf", "ciphersuite");
 		Cipher cipher = Cipher.getInstance(cipherAlgorithm, PROVIDER);
 		cipher.init(Cipher.DECRYPT_MODE, sessionKey, ivSpec);
-		byte[] content = cipher.doFinal(ciphered);
-		ByteBuffer personalMessage = ByteBuffer.wrap(Arrays.copyOfRange(content, 0, content.length - mac.getMacLength()));
-		byte[] personalMessageHash = Arrays.copyOfRange(content, content.length - mac.getMacLength(), content.length);
+		ByteBuffer content = ByteBuffer.wrap(cipher.doFinal(ciphered));
+		mac.init(personalMessageMacKey);
+		byte[] mp = new byte[content.capacity() - mac.getMacLength()];
+		content.get(mp);
+		byte[] mpHash = new byte[mac.getMacLength()];
+		content.get(mpHash);
+		ByteBuffer personalMessage = ByteBuffer.wrap(mp);
 		byte[] clientId = new byte[MAX_ID_BYTES];
 		personalMessage.get(clientId);
-		System.out.println(new String(clientId).trim());
-		// Verificar o nounce para evitar a repeticao de mensagens
 		int nounce = personalMessage.getInt();
 		if (nounces.contains(nounce)) {
 			throw new DataReplyingException();
 		}
 		nounces.add(nounce);
-		byte[] message = new byte[data.capacity()];
+		byte[] message = new byte[personalMessage.capacity() - personalMessage.position()];
 		personalMessage.get(message);
-		// Verificacao Mac da mensagem pessoal para mitigar ataques de integridade e autenticidade
-		mac.init(personalMessageMacKey);
-		if (!MessageDigest.isEqual(personalMessageHash, mac.doFinal(personalMessage.array()))) {
+		if (!MessageDigest.isEqual(mpHash, mac.doFinal(personalMessage.array()))) {
 			throw new DataIntegrityAuthenticityException("Message Mac does not match.");
 		}
-
 		return message;
 	}
 
-
-	protected void recieveAuthRequest(DatagramPacket datagramPacket) throws Exception {
-		super.receive(datagramPacket);
-		ByteBuffer dataWriter = (ByteBuffer)ByteBuffer.wrap(datagramPacket.getData()).position(datagramPacket.getOffset());
+	protected void recieveAuthRequest(DatagramPacket packet) throws Exception {
+		super.receive(packet);
+		ByteBuffer dataWriter = (ByteBuffer)ByteBuffer.wrap(packet.getData()).position(packet.getOffset());
 		ByteBuffer dataReader = dataWriter.duplicate().asReadOnlyBuffer();
 		Header header = getPacketHeader(dataReader);
 		AuthorizationRequest auth = decryptAuthRequest(header, dataReader);
@@ -329,8 +333,9 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		ObjectOutput o = new ObjectOutputStream(bos);   
 		o.writeObject(auth);
 		o.flush();
-		dataWriter.put(bos.toByteArray());
-		datagramPacket.setData(dataWriter.array());
+		byte[] data = bos.toByteArray();
+		dataWriter.put(data);
+		packet.setData(dataWriter.array(), packet.getOffset(), data.length);
 	}
 
 	private AuthorizationRequest decryptAuthRequest(Header header, ByteBuffer data) throws Exception {
@@ -397,9 +402,9 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		return request;
 	}
 
-	private void recieveAuthReply(DatagramPacket datagramPacket, String password, int nounce) throws Exception {
-		super.receive(datagramPacket);
-		ByteBuffer dataWriter = (ByteBuffer)ByteBuffer.wrap(datagramPacket.getData()).position(datagramPacket.getOffset());
+	private void recieveAuthReply(DatagramPacket packet, String password, int nounce) throws Exception {
+		super.receive(packet);
+		ByteBuffer dataWriter = (ByteBuffer)ByteBuffer.wrap(packet.getData()).position(packet.getOffset());
 		ByteBuffer dataReader = dataWriter.duplicate().asReadOnlyBuffer();
 		Header header = getPacketHeader(dataReader);
 		TicketAS ticket = decryptAuthReply(header, dataReader, password, nounce);
@@ -407,8 +412,9 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		ObjectOutput o = new ObjectOutputStream(bos);   
 		o.writeObject(ticket);
 		o.flush();
-		dataWriter.put(bos.toByteArray());
-		datagramPacket.setData(dataWriter.array());
+		byte[] data = bos.toByteArray();
+		dataWriter.put(data);
+		packet.setData(dataWriter.array(), packet.getOffset(), data.length);
 	}
 
 	private TicketAS decryptAuthReply(Header header, ByteBuffer payload, String digestedPassword, int nounce) throws Exception {
@@ -515,7 +521,12 @@ public final class STGCMulticastSocket extends MulticastSocket {
 
 	@Override
 	public void joinGroup(SocketAddress socketAddress, NetworkInterface networkInterface) throws IOException {
-		throw new UnsupportedOperationException();
+		InetSocketAddress addr = (InetSocketAddress)socketAddress;
+		String ip = addr.getAddress().getHostAddress();
+		if (!hasAccess(ip)) {
+			throw new UnauthorizedException("Unauthorized to join " + ip);
+		}
+		super.joinGroup(socketAddress, networkInterface);
 	}
 
 	private boolean hasAccess(String multicastIp) {
@@ -529,22 +540,21 @@ public final class STGCMulticastSocket extends MulticastSocket {
 		tickets.remove(ip);
 	}
 
-	public void requestAuthorization(String id, String password, InetAddress group) throws Exception {
+	public void requestAuthorization(String username, String password, InetAddress group) throws Exception {
 		// Send Request
-		byte[] idBytes = id.getBytes(StandardCharsets.UTF_8);
 		String passwordDigestAlgorithm = getPasswordDigestAlgorithm();
 		MessageDigest passwordDigest = MessageDigest.getInstance(passwordDigestAlgorithm, PROVIDER);
 		String digestedPassword = Utils.toHex(passwordDigest.digest(password.getBytes(StandardCharsets.UTF_8)));
-		byte[] passwordBytes = digestedPassword.getBytes(StandardCharsets.UTF_8);
-		byte[] ipBytes = group.getHostAddress().getBytes(StandardCharsets.UTF_8);
 		int nounce = Utils.generateNounce();
-		byte[] request = ByteBuffer
-				.allocate(Integer.BYTES + idBytes.length + Integer.BYTES + passwordBytes.length + Integer.BYTES + ipBytes.length + Integer.BYTES)
-				.putInt(idBytes.length).put(idBytes)
-				.putInt(passwordBytes.length).put(passwordBytes)
-				.putInt(ipBytes.length).put(ipBytes).putInt(nounce)
-				.array();
-		DatagramPacket requestPacket = new DatagramPacket(request, request.length, InetAddress.getByName(AUTH_SERVER_IP), 3001);
+		ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
+		DataOutputStream dataStream = new DataOutputStream(byteStream);
+		dataStream.writeUTF(username);
+		dataStream.writeUTF(digestedPassword);
+		dataStream.writeUTF(group.getHostAddress());
+		dataStream.writeInt(nounce);
+		dataStream.close();
+		byte[] data = byteStream.toByteArray();
+		DatagramPacket requestPacket = new DatagramPacket(data, data.length, InetAddress.getByName(AUTH_SERVER_IP), AUTH_SERVER_PORT);
 		System.out.println("> Sending authorization request at " + new Date());
 		sendAuthRequest(requestPacket);
 		// And recieve reply

@@ -31,7 +31,7 @@ import javax.crypto.spec.PBEParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import javax.swing.*;
 
-import stgc_tlp.STGCMulticastSocket;
+import stgc.STGCMulticastSocket;
 
 import java.util.*;
 
@@ -92,7 +92,7 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener {
 		box.add(Box.createVerticalGlue());
 		JPanel messagePanel = new JPanel(new BorderLayout());
 
-		messagePanel.add(new JLabel("Menssagem:"), BorderLayout.WEST);
+		messagePanel.add(new JLabel("Mensagem:"), BorderLayout.WEST);
 
 		messageField = new JTextField();
 		messageField.addActionListener(new ActionListener() {
@@ -189,7 +189,7 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener {
 	}
 
 	// Configuracao do grupo multicast da sessao de chat na interface do cliente
-	public void join(String username, InetAddress group, int port, int ttl) throws IOException {
+	public void join(String username, InetAddress group, int port, int ttl) throws Exception {
 		setTitle("CHAT MulticastIP " + username + "@" + group.getHostAddress() + ":" + port + " [TTL=" + ttl + "]");
 		// Criar sessao de chat multicast
 		chat = new MulticastChat(username, group, port, ttl, this);
@@ -306,12 +306,10 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener {
 			System.err.println("       - TTL default = 1");
 			System.exit(1);
 		} 
-
 		String username = args[0];
 		InetAddress group = null;
 		int port = -1;
 		int ttl = 1;
-
 		try {
 			group = InetAddress.getByName(args[1]);
 		} catch (Throwable e) {
@@ -319,20 +317,16 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener {
 					+ e.getMessage());
 			System.exit(1);
 		} 
-
 		if (!group.isMulticastAddress()) {
-			System.err.println("Argumento Grupo '" + args[1] 
-					+ "' nao e um end. IP multicast");
+			System.err.println("Argumento Grupo '" + args[1] + "' nao e um end. IP multicast");
 			System.exit(1);
 		} 
-
 		try {
 			port = Integer.parseInt(args[2]);
 		} catch (NumberFormatException e) {
 			System.err.println("Porto invalido: " + args[2]);
 			System.exit(1);
 		} 
-
 		if (args.length >= 4) {
 			try {
 				ttl = Integer.parseInt(args[3]);
@@ -341,12 +335,10 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener {
 				System.exit(1); 
 			} 
 		} 
-
 		try {
 			MChatCliente frame = new MChatCliente();
 			frame.setSize(800, 300);
 			frame.setVisible(true);
-
 			frame.join(username, group, port, ttl);
 		} catch (Throwable e) {
 			System.err.println("Erro ao iniciar a frame: " + e.getClass().getName() + ": " + e.getMessage());
