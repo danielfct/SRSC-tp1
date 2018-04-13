@@ -80,7 +80,7 @@ public class MulticastChat extends Thread {
 	protected void sendJoin() throws IOException {
 		ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
 		DataOutputStream dataStream = new DataOutputStream(byteStream);
-		byte[] user = ("<" + username + ">").getBytes(StandardCharsets.UTF_8); //TODO
+		byte[] user = ("<" + username + ">").getBytes(StandardCharsets.UTF_8);
 		dataStream.write(user);
 		dataStream.writeLong(CHAT_MAGIC_NUMBER);
 		dataStream.writeInt(JOIN);
@@ -103,7 +103,8 @@ public class MulticastChat extends Thread {
 	protected void sendLeave() throws IOException {
 		ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
 		DataOutputStream dataStream = new DataOutputStream(byteStream);
-		dataStream.writeUTF(username);
+		byte[] user = ("<" + username + ">").getBytes(StandardCharsets.UTF_8);
+		dataStream.write(user);
 		dataStream.writeLong(CHAT_MAGIC_NUMBER);
 		dataStream.writeInt(LEAVE);
 		dataStream.writeUTF(username);
@@ -126,7 +127,8 @@ public class MulticastChat extends Thread {
 	public void sendMessage(String message) throws IOException {
 		ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
 		DataOutputStream dataStream = new DataOutputStream(byteStream);
-		dataStream.writeUTF(username);
+		byte[] user = ("<" + username + ">").getBytes(StandardCharsets.UTF_8);
+		dataStream.write(user);
 		dataStream.writeLong(CHAT_MAGIC_NUMBER);
 		dataStream.writeInt(MESSAGE);
 		dataStream.writeUTF(username);

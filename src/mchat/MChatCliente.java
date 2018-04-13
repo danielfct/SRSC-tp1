@@ -286,7 +286,7 @@ public class MChatCliente extends JFrame implements MulticastChatEventListener {
 
 	// Invocado quando s erecebe uma mensagem
 	public void chatMessageReceived(String username, InetAddress address, int port, String message) {
-		log("MSG:[" + username+"@"+address.getHostName() + "] disse: " + message);
+		log("MSG:[" + username+" @"+address.getHostName() + "] disse: " + message);
 	} 
 
 	// Invocado quando um novo utilizador se juntou ao chat

@@ -2,7 +2,6 @@ package stgc;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -19,24 +18,25 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 
 import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.SecretKeySpec;
 
 import stgc.exceptions.InvalidAddressException;
 import utils.Utils;
+import utils.XmlParser;
 
 final class AuthenticationServer {
 
-	private static final String CIPHERSUITE_FILE = "res/ciphersuite.conf";
 	private static final String KEYSTORE_FILE = "res/keystore.jceks";
 	private static final String KEYSTORE_PASSWORD = "password";
+	private static final String JCEKS_VALUE = "*";
 	private static final int MAX_PACKET_SIZE = 65507;
-
+	
 	@SuppressWarnings("resource")
 	public static void main(String[] args) throws IOException {
 		if (args.length != 5 ) {
-			System.err.println("usage: Java AuthenticationServer multicastgroup port password salt iterations") ;
+			System.err.println("usage: Java AuthenticationServer multicastgroup port password salt iterations");
 			System.exit(0);
 		}
 		InetAddress group = InetAddress.getByName(args[0]);
@@ -85,12 +85,11 @@ final class AuthenticationServer {
 				String digestedPassword = auth.getDigestedPassword();
 				int nouncePlusOne = nounce + 1;
 				int nounceS = Utils.generateNounce();
-				String ciphersuite = getCiphersuite();
-				Key sessionKey = getKeyFromKeystore("sessionkey", "password");
-				String macAlgorithm = getMacAlgorithm();
-				Key macKey = getKeyFromKeystore("mackey", "password");
+				String ciphersuite = getCiphersuite(ip);
+				Key sessionKey = getSessionKey(ip);
+				String macAlgorithm = getMacAlgorithm(ip);
+				Key macKey = getMacKey(ip);
 				TicketAS ticket = new TicketAS(user, ip, ciphersuite, sessionKey, macAlgorithm, macKey);
-				
 				AuthorizationReply authReply = new AuthorizationReply(digestedPassword, nouncePlusOne, nounceS, ticket);
 				ByteArrayOutputStream bos = new ByteArrayOutputStream();
 				ObjectOutput o = new ObjectOutputStream(bos);   
@@ -109,6 +108,11 @@ final class AuthenticationServer {
 			}
 		}
 	}
+	
+//	private static boolean isAuthorized(Map<String, List<String>> auths, String multicastIP, String user) {
+//		List<String> users = auths.get(multicastIP);
+//		return users != null && users.contains(user);
+//	}
 
 	private static Key getKeyFromKeystore(String key, String password) throws Exception {
 		final KeyStore keyStore = KeyStore.getInstance("JCEKS");
@@ -116,23 +120,44 @@ final class AuthenticationServer {
 		return keyStore.getKey(key, password.toCharArray());
 	}
 
-//	private static boolean isAuthorized(Map<String, List<String>> auths, String multicastIP, String user) {
-//		List<String> users = auths.get(multicastIP);
-//		return users != null && users.contains(user);
-//	}
-
-	private static String getPropertyValue(String file, String key) throws IOException {
-		Properties properties = new Properties();
-		properties.load(new FileInputStream(file));
-		return properties.getProperty(key);
+	private static String getCiphersuite(String ip) throws Exception {
+		return XmlParser.getRoomProperty(ip, "ciphersuite");
 	}
 
-	private static String getCiphersuite() throws IOException {
-		return getPropertyValue(CIPHERSUITE_FILE, "ciphersuite");
+	private static String getMacAlgorithm(String ip) throws Exception {
+		return XmlParser.getRoomProperty(ip, "mac");
+	}
+	
+	private static String getKeyValue(String ip) throws Exception {
+		return XmlParser.getRoomProperty(ip, "keyvalue");
+	}
+	
+	private static String getMacKeyValue(String ip) throws Exception {
+		return XmlParser.getRoomProperty(ip, "mackeyvalue");
 	}
 
-	private static String getMacAlgorithm() throws IOException {
-		return getPropertyValue(CIPHERSUITE_FILE, "mac");
+	private static Key getSessionKey(String ip) throws Exception {
+		Key sessionKey = null;
+		String keyValue = getKeyValue(ip);
+		if (!keyValue.equals(JCEKS_VALUE)) {
+			String ciphersuite = getCiphersuite(ip);
+			sessionKey = new SecretKeySpec(Utils.toBytes(keyValue), ciphersuite); 
+		} else {
+			sessionKey = getKeyFromKeystore("sessionkey", "password");
+		}
+		return sessionKey;
 	}
 
+	private static Key getMacKey(String ip) throws Exception {
+		Key macKey = null;
+		String macKeyValue = getMacKeyValue(ip);
+		if (!macKeyValue.equals(JCEKS_VALUE)) {
+			String macAlgorithm = getMacAlgorithm(ip);
+			macKey = new SecretKeySpec(Utils.toBytes(macKeyValue), macAlgorithm);
+		} else {
+			macKey = getKeyFromKeystore("mackey", "password");
+		}
+		return macKey;
+	}
+	
 }
